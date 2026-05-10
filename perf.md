@@ -2,45 +2,53 @@ benchmark config: warmup=8 iters=50 train_warmup=1 train_iters=30
 benchmark context: vocab=32 layers=4 d_model=256 d_ff=512 heads=8 kv_heads=4 head_dim=32 prefill_len=128 decode_prompt_len=127
 
 === Inference ===
--- Kernel Components --
-inference.kernel.rms_norm                           33.50 us/iter
-inference.kernel.add                                 4.07 us/iter
-inference.kernel.linear_q                           23.33 us/iter
-inference.kernel.apply_rope                          8.08 us/iter
-inference.kernel.softmax_stable                      0.40 us/iter
-inference.kernel.attention_prefill                4868.15 us/iter
-inference.kernel.attention_decode                   40.97 us/iter
-inference.kernel.mlp_gate_linear                    43.68 us/iter
-inference.kernel.mlp_up_linear                      43.81 us/iter
-inference.kernel.mlp_silu_mul                      113.35 us/iter
-inference.kernel.mlp_down_linear                    38.86 us/iter
--- Pipeline Components --
-inference.pipeline.embed                             4.31 us/iter
-inference.pipeline.prefill                       24047.36 us/iter
-inference.pipeline.decode_first_token            22639.14 us/iter
-inference.pipeline.decode_steady_state             418.43 us/iter
-inference.pipeline.project_logits                    5.20 us/iter
-inference.pipeline.argmax_from_hidden_row            0.64 us/iter
--- End-to-End --
-inference.e2e.last_argmax                        23625.49 us/iter
-inference.e2e.first_token_argmax                 22021.49 us/iter
-inference.e2e.decode_x32_tokens                    328.21 us/token
+-- Individual Kernels --
+kernel: RMSNorm                                             60.81 us/iter
+kernel: residual add                                         2.18 us/iter
+kernel: Q projection                                        31.70 us/iter
+kernel: RoPE rotation                                       12.66 us/iter
+kernel: vocab softmax                                        0.17 us/iter
+kernel: attention prefill                                  316.79 us/iter
+kernel: attention decode                                     7.25 us/iter
+kernel: MLP gate projection                                 50.56 us/iter
+kernel: MLP up projection                                   49.65 us/iter
+kernel: MLP SiLU gate multiply                              60.59 us/iter
+kernel: MLP down projection                                 42.30 us/iter
+-- Model Stages --
+stage: token embedding                                       5.19 us/iter
+stage: prefill whole prompt                               2912.11 us/iter
+stage: decode first generated token                       3426.91 us/iter
+stage: decode next generated token                         255.91 us/iter
+stage: project hidden to vocab logits                        5.21 us/iter
+stage: choose argmax token                                   0.58 us/iter
+-- End-to-End Paths --
+path: prefill then argmax last row                        3016.76 us/iter
+path: prefill then decode one token                       3423.62 us/iter
+path: decode 32 generated tokens                           192.91 us/token
 
 === Train ===
--- Kernel Components --
-train.kernel.backward_lm_head                        1.98 us/iter
-train.kernel.backward_hidden                         1.28 us/iter
-train.kernel.backward_embedding                      0.62 us/iter
-train.kernel.linear_backward                         8.91 us/iter
-train.kernel.rms_norm_backward                       6.86 us/iter
-train.kernel.silu_mul_backward                      16.73 us/iter
-train.kernel.apply_rope_backward                     0.73 us/iter
-train.kernel.attention_prefill_backward             77.50 us/iter
--- Pipeline Components --
-train.pipeline.forward_for_training                825.54 us/iter
-train.pipeline.cross_entropy                         0.35 us/iter
-train.pipeline.model_backward                     1338.33 us/iter
-train.pipeline.adamw_update_model                 1252.78 us/iter
--- End-to-End --
-train.e2e.train_step                              6873.42 us/iter
-train.e2e.train_step_per_token                     518.74 us/token
+-- Individual Kernels --
+kernel: grad final vocab projection                          1.94 us/iter
+kernel: grad hidden from logits                              1.31 us/iter
+kernel: grad token embedding                                 0.61 us/iter
+kernel: linear layer backward                                8.94 us/iter
+kernel: RMSNorm backward                                     7.05 us/iter
+kernel: SiLU gate backward                                  19.38 us/iter
+kernel: RoPE backward                                        0.73 us/iter
+kernel: attention backward                                  46.99 us/iter
+-- Training Step Breakdown --
+step: reset gradient buffers                                88.62 us/iter
+step: forward training pass                                750.96 us/iter
+step: project selected logits                                1.82 us/iter
+step: cross entropy loss                                     2.38 us/iter
+step: grad final vocab projection                            1.90 us/iter
+step: grad hidden from logits                                2.36 us/iter
+step: transformer backward pass                           1138.19 us/iter
+step: grad token embedding                                   0.95 us/iter
+step: gradient clipping                                   3019.29 us/iter
+step: AdamW optimizer update                              1159.42 us/iter
+check: sum of listed train steps                          6165.88 us/iter
+-- End-to-End Training --
+full train_step()                                         6497.48 us/iter
+full train_step() per token                                382.20 us/token
+check: unlisted train_step overhead                        331.60 us/iter

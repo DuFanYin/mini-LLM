@@ -101,10 +101,10 @@ TEST(AttentionOpsTest, CausalMaskBlocksFutureTokens) {
 TEST(AttentionOpsTest, GQAMappingUsesGroupedKvHeads) {
     // [S=1,Hq=4,D=1]
     std::vector<float> q = {1, 1, 1, 1};
-    // [T=2,Hkv=2,D=1], all keys equal => equal probs over T
+    // [Hkv=2,T=2,D=1], all keys equal => equal probs over T
     std::vector<float> k = {1, 1, 1, 1};
-    // token0: kv0=10, kv1=20; token1: kv0=30, kv1=40
-    std::vector<float> v = {10, 20, 30, 40};
+    // kv0: token0=10, token1=30; kv1: token0=20, token1=40
+    std::vector<float> v = {10, 30, 20, 40};
 
     kernel::AttentionParams attention_params;
     attention_params.seq_len = 1;

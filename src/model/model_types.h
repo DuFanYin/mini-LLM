@@ -114,6 +114,7 @@ struct CacheView {
     size_t layer_id = 0;
     size_t past_len = 0;
     size_t total_kv_len = 0;
+    size_t kv_stride = 0;
     const float* k_cache = nullptr;
     const float* v_cache = nullptr;
 };

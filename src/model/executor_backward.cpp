@@ -72,11 +72,11 @@ void backward_decoder_attention(const std::vector<float>& grad_post_attn, const 
     attention_params.head_dim = config.head_dim;
     attention_params.past_len = past_len;
     attention_params.total_kv_len = total_kv_len;
+    attention_params.kv_stride = total_kv_len;
     attention_params.causal = true;
     attention_params.use_cache = true;
 
     grad_q.assign(tape.q_rope.size(), 0.0f);
-    const bool has_cached_kv = (tape.k_all_ptr != nullptr) || !tape.k_all.empty();
     const float* k_all = (tape.k_all_ptr != nullptr) ? tape.k_all_ptr : (tape.k_all.empty() ? tape.k_rope.data() : tape.k_all.data());
     const float* v_all = (tape.v_all_ptr != nullptr) ? tape.v_all_ptr : (tape.v_all.empty() ? tape.v_proj.data() : tape.v_all.data());
     const float* attn_probs_ptr =
@@ -88,33 +88,28 @@ void backward_decoder_attention(const std::vector<float>& grad_post_attn, const 
                                            attention_params);
 
     std::vector<float> grad_k_rope_current;
-    if (!has_cached_kv && past_len == 0) {
-        grad_k_rope_current = std::move(grad_k_all);
-        grad_v_proj = std::move(grad_v_all);
-    } else {
-        grad_k_rope_current.assign(seq_len * kv_proj_dim, 0.0f);
-        grad_v_proj.assign(seq_len * kv_proj_dim, 0.0f);
+    grad_k_rope_current.assign(seq_len * kv_proj_dim, 0.0f);
+    grad_v_proj.assign(seq_len * kv_proj_dim, 0.0f);
 
-        for (size_t si = 0; si < seq_len; ++si) {
-            const size_t ti = past_len + si;
-            for (size_t h = 0; h < config.num_kv_heads; ++h) {
-                for (size_t d = 0; d < config.head_dim; ++d) {
-                    grad_k_rope_current[kernel::idx3(si, h, d, config.num_kv_heads, config.head_dim)] +=
-                        grad_k_all[kernel::idx3(ti, h, d, config.num_kv_heads, config.head_dim)];
-                }
+    for (size_t si = 0; si < seq_len; ++si) {
+        const size_t ti = past_len + si;
+        for (size_t h = 0; h < config.num_kv_heads; ++h) {
+            for (size_t d = 0; d < config.head_dim; ++d) {
+                grad_k_rope_current[kernel::idx3(si, h, d, config.num_kv_heads, config.head_dim)] +=
+                    grad_k_all[(h * total_kv_len + ti) * config.head_dim + d];
             }
         }
+    }
 
-        for (size_t ti = past_len; ti < total_kv_len; ++ti) {
-            const size_t si = ti - past_len;
-            if (si >= seq_len) {
-                continue;
-            }
-            for (size_t h = 0; h < config.num_kv_heads; ++h) {
-                for (size_t d = 0; d < config.head_dim; ++d) {
-                    grad_v_proj[kernel::idx3(si, h, d, config.num_kv_heads, config.head_dim)] +=
-                        grad_v_all[kernel::idx3(ti, h, d, config.num_kv_heads, config.head_dim)];
-                }
+    for (size_t ti = past_len; ti < total_kv_len; ++ti) {
+        const size_t si = ti - past_len;
+        if (si >= seq_len) {
+            continue;
+        }
+        for (size_t h = 0; h < config.num_kv_heads; ++h) {
+            for (size_t d = 0; d < config.head_dim; ++d) {
+                grad_v_proj[kernel::idx3(si, h, d, config.num_kv_heads, config.head_dim)] +=
+                    grad_v_all[(h * total_kv_len + ti) * config.head_dim + d];
             }
         }
     }

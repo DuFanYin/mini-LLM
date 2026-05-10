@@ -16,6 +16,8 @@ target_compile_options(mini_transformer_warnings INTERFACE
 foreach(_var IN ITEMS
     MINI_LLM_KERNEL_BACKEND
     MINI_LLM_GEMM_DRIVER_SRC
+    MINI_LLM_ATTENTION_SRC
+    MINI_LLM_CORE_SRC
     MINI_LLM_USE_ACCELERATE)
   if(NOT DEFINED ${_var})
     message(FATAL_ERROR
@@ -31,10 +33,10 @@ add_library(model STATIC
   src/engine/validation.cpp
   src/engine/kv_cache.cpp
   src/engine/io.cpp
-  src/kernel/core.cpp
+  ${MINI_LLM_CORE_SRC}
   ${MINI_LLM_GEMM_DRIVER_SRC}
   ${MINI_LLM_GEMM_PRIMS_SRC}
-  src/kernel/attention.cpp
+  ${MINI_LLM_ATTENTION_SRC}
   src/kernel/norm_rope.cpp
   src/kernel/backward.cpp
 )

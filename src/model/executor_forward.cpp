@@ -9,6 +9,18 @@
 
 namespace model {
 
+void copy_token_major_to_head_major(const float* token_major, float* head_major, size_t seq_len, size_t num_heads,
+                                    size_t head_dim) {
+    for (size_t si = 0; si < seq_len; ++si) {
+        for (size_t h = 0; h < num_heads; ++h) {
+            for (size_t d = 0; d < head_dim; ++d) {
+                head_major[(h * seq_len + si) * head_dim + d] =
+                    token_major[kernel::idx3(si, h, d, num_heads, head_dim)];
+            }
+        }
+    }
+}
+
 // Attention submodule: pre-norm -> QKV -> RoPE -> KV -> GQA -> o_proj -> residual with input. Writes post-attention
 // hidden (before second norm / MLP) to `hidden_after_attn_out`. On the inference path (tape == nullptr) intermediate
 // tensors are held in function-local vectors; on the training path they are stored in `tape` for backward.
@@ -87,16 +99,28 @@ void forward_attention_block(const ModelConfig& config, const DecoderLayerWeight
     // --- Full K/V span (cached prefix + current step) for attention ---
     const float* k_all_ptr = nullptr;
     const float* v_all_ptr = nullptr;
+    size_t kv_stride = seq_len;
     size_t total_kv_len = seq_len;
+    std::vector<float> k_head_major_local;
+    std::vector<float> v_head_major_local;
     if (input.use_cache) {
         engine::append_cache(cache, input.layer_id, k_rope.data(), v_proj.data(), seq_len);
         const CacheView updated_cache_view = engine::build_cache_view(cache, input.layer_id);
         total_kv_len = updated_cache_view.total_kv_len;
+        kv_stride = updated_cache_view.kv_stride;
         k_all_ptr = updated_cache_view.k_cache;
         v_all_ptr = updated_cache_view.v_cache;
     } else {
-        k_all_ptr = k_rope.data();
-        v_all_ptr = v_proj.data();
+        std::vector<float>& k_head_major = (tape != nullptr) ? tape->k_all : k_head_major_local;
+        std::vector<float>& v_head_major = (tape != nullptr) ? tape->v_all : v_head_major_local;
+        k_head_major.resize(seq_len * kv_proj_dim);
+        v_head_major.resize(seq_len * kv_proj_dim);
+        copy_token_major_to_head_major(k_rope.data(), k_head_major.data(), seq_len, config.num_kv_heads,
+                                       config.head_dim);
+        copy_token_major_to_head_major(v_proj.data(), v_head_major.data(), seq_len, config.num_kv_heads,
+                                       config.head_dim);
+        k_all_ptr = k_head_major.data();
+        v_all_ptr = v_head_major.data();
     }
     engine::validate_attention_mask_size(seq_len, total_kv_len, input.attention_mask);
 
@@ -112,12 +136,10 @@ void forward_attention_block(const ModelConfig& config, const DecoderLayerWeight
             tape->k_all_size = cache_elems;
             tape->v_all_size = cache_elems;
         } else {
-            tape->k_all.clear();
-            tape->v_all.clear();
             tape->k_all_ptr = nullptr;
             tape->v_all_ptr = nullptr;
-            tape->k_all_size = 0;
-            tape->v_all_size = 0;
+            tape->k_all_size = tape->k_all.size();
+            tape->v_all_size = tape->v_all.size();
         }
     }
 
@@ -128,6 +150,7 @@ void forward_attention_block(const ModelConfig& config, const DecoderLayerWeight
     attention_params.head_dim = config.head_dim;
     attention_params.past_len = past_len;
     attention_params.total_kv_len = total_kv_len;
+    attention_params.kv_stride = kv_stride;
     attention_params.causal = input.causal;
     attention_params.use_cache = input.use_cache;
 

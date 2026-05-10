@@ -60,6 +60,7 @@ struct AttentionParams {
     size_t head_dim = 0;
     size_t past_len = 0;
     size_t total_kv_len = 0;
+    size_t kv_stride = 0;
     bool causal = true;
     bool use_cache = true;
 };

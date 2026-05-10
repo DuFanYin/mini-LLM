@@ -11,10 +11,10 @@ namespace engine {
 KVCache::KVCache(const KVCacheConfig& cfg) : cfg_(cfg) {
     validate_kv_cache_config(cfg_);
     pages_per_layer_ = ceil_div(cfg_.max_seq_len, cfg_.page_size);
-    elems_per_page_ = cfg_.num_kv_heads * cfg_.page_size * cfg_.head_dim;
-    const size_t total_pages = cfg_.num_layers * pages_per_layer_;
-    k_pages_.assign(total_pages * elems_per_page_, 0.0f);
-    v_pages_.assign(total_pages * elems_per_page_, 0.0f);
+    const size_t padded_seq_len = pages_per_layer_ * cfg_.page_size;
+    elems_per_page_ = cfg_.num_kv_heads * padded_seq_len * cfg_.head_dim;
+    k_pages_.assign(cfg_.num_layers * elems_per_page_, 0.0f);
+    v_pages_.assign(cfg_.num_layers * elems_per_page_, 0.0f);
     seq_lens_.assign(cfg_.num_layers, 0);
 }
 
@@ -99,14 +99,12 @@ float KVCache::v_at(size_t layer, size_t hkv, size_t pos, size_t d) const {
 
 const float* KVCache::k_layer_data(size_t layer_id) const {
     validate_kv_cache_layer(cfg_, layer_id);
-    const size_t page_slot = layer_id * pages_per_layer_;
-    return k_pages_.data() + page_slot * elems_per_page_;
+    return k_pages_.data() + layer_id * elems_per_page_;
 }
 
 const float* KVCache::v_layer_data(size_t layer_id) const {
     validate_kv_cache_layer(cfg_, layer_id);
-    const size_t page_slot = layer_id * pages_per_layer_;
-    return v_pages_.data() + page_slot * elems_per_page_;
+    return v_pages_.data() + layer_id * elems_per_page_;
 }
 
 size_t KVCache::idx3(size_t a, size_t b, size_t c, size_t B, size_t C) {
@@ -118,13 +116,8 @@ size_t KVCache::ceil_div(size_t a, size_t b) {
 }
 
 size_t KVCache::idx4(size_t layer, size_t hkv, size_t pos, size_t d) const {
-    const size_t page_id = pos / cfg_.page_size;
-    const size_t in_page = pos % cfg_.page_size;
-
-    const size_t page_slot = layer * pages_per_layer_ + page_id;
-    const size_t token_stride = cfg_.num_kv_heads * cfg_.head_dim;
-
-    return page_slot * elems_per_page_ + in_page * token_stride + hkv * cfg_.head_dim + d;
+    const size_t padded_seq_len = pages_per_layer_ * cfg_.page_size;
+    return layer * elems_per_page_ + (hkv * padded_seq_len + pos) * cfg_.head_dim + d;
 }
 
 model::CacheBridge make_cache_bridge(KVCache& cache) {
@@ -158,6 +151,7 @@ model::CacheView build_cache_view(const model::CacheBridge& cache, size_t layer_
     const size_t total_kv_len = kv->seq_len(layer_id);
     view.total_kv_len = total_kv_len;
     view.past_len = total_kv_len;
+    view.kv_stride = kv->pages_per_layer() * kv->page_size();
     view.k_cache = kv->k_layer_data(layer_id);
     view.v_cache = kv->v_layer_data(layer_id);
     return view;

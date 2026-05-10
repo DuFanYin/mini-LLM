@@ -34,6 +34,8 @@ fi
 gemm_driver=""
 gemm_prims=""
 gemm_prims_flags=""
+attention_src="src/kernel/attention.cpp"
+core_src="src/kernel/core.cpp"
 use_accelerate="OFF"
 
 case "$backend" in
@@ -57,6 +59,8 @@ case "$backend" in
         fi
         gemm_driver="src/kernel/gemm_accelerate.cpp"
         gemm_prims=""
+        attention_src="src/kernel/attention_accelerate.cpp"
+        core_src="src/kernel/core_accelerate.cpp"
         use_accelerate="ON"
         ;;
     *)
@@ -74,6 +78,8 @@ cmake -S . -B build \
     -DMINI_LLM_GEMM_DRIVER_SRC="$gemm_driver" \
     -DMINI_LLM_GEMM_PRIMS_SRC="$gemm_prims" \
     -DMINI_LLM_GEMM_PRIMS_FLAGS="$gemm_prims_flags" \
+    -DMINI_LLM_ATTENTION_SRC="$attention_src" \
+    -DMINI_LLM_CORE_SRC="$core_src" \
     -DMINI_LLM_USE_ACCELERATE="$use_accelerate"
 
 cmake --build build -j
