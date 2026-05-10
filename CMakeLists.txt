@@ -11,6 +11,19 @@ target_compile_options(mini_transformer_warnings INTERFACE
   $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-Wall -Wextra -Wpedantic>
 )
 
+# Kernel backend selection lives in scripts/configure.sh, which feeds the
+# resolved values below. Run that script first; CMake here just consumes them.
+foreach(_var IN ITEMS
+    MINI_LLM_KERNEL_BACKEND
+    MINI_LLM_GEMM_DRIVER_SRC
+    MINI_LLM_USE_ACCELERATE)
+  if(NOT DEFINED ${_var})
+    message(FATAL_ERROR
+      "${_var} is not set. Run ./scripts/configure.sh before invoking cmake.")
+  endif()
+endforeach()
+message(STATUS "mini-LLM kernel backend: ${MINI_LLM_KERNEL_BACKEND}")
+
 add_library(model STATIC
   src/model/mini_llm.cpp
   src/model/executor_forward.cpp
@@ -19,11 +32,20 @@ add_library(model STATIC
   src/engine/kv_cache.cpp
   src/engine/io.cpp
   src/kernel/core.cpp
-  src/kernel/gemm.cpp
+  ${MINI_LLM_GEMM_DRIVER_SRC}
+  ${MINI_LLM_GEMM_PRIMS_SRC}
   src/kernel/attention.cpp
   src/kernel/norm_rope.cpp
   src/kernel/backward.cpp
 )
+
+if(MINI_LLM_GEMM_PRIMS_SRC AND MINI_LLM_GEMM_PRIMS_FLAGS)
+  set_source_files_properties(${MINI_LLM_GEMM_PRIMS_SRC}
+    PROPERTIES COMPILE_OPTIONS "${MINI_LLM_GEMM_PRIMS_FLAGS}")
+endif()
+if(MINI_LLM_USE_ACCELERATE)
+  target_link_libraries(model PUBLIC "-framework Accelerate")
+endif()
 target_include_directories(model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(model PUBLIC mini_transformer_warnings)
 
@@ -46,37 +68,9 @@ target_link_libraries(inference PRIVATE language_model mini_transformer_warnings
 add_executable(train train.cpp)
 target_link_libraries(train PRIVATE language_model mini_transformer_warnings)
 
-add_executable(debug_scores tests/debug_scores.cpp)
-target_link_libraries(debug_scores PRIVATE model mini_transformer_warnings)
-
 add_executable(benchmark benchmark.cpp)
 target_link_libraries(benchmark PRIVATE language_model mini_transformer_warnings)
 
 option(BUILD_TESTS "Build gtest-based model tests" ON)
-if(BUILD_TESTS)
-  include(FetchContent)
-  find_package(GTest QUIET)
-  if(NOT GTest_FOUND)
-    FetchContent_Declare(
-      googletest
-      URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
-    )
-    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(googletest)
-  endif()
-
-  enable_testing()
-  include(GoogleTest)
-
-  add_executable(tests_runner
-    tests/ops_test.cpp
-    tests/io_test.cpp
-    tests/data_test.cpp
-    tests/decode_test.cpp
-    tests/loss_test.cpp
-    tests/model_test.cpp
-  )
-  target_link_libraries(tests_runner PRIVATE language_model GTest::gtest_main mini_transformer_warnings)
-
-  gtest_discover_tests(tests_runner)
-endif()
+enable_testing()
+add_subdirectory(tests)
