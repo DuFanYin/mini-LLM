@@ -1,57 +1,40 @@
 #!/usr/bin/env bash
-# Usage: ./scripts/configure.sh [neon|avx2|scalar|accelerate]
+# Usage: ./scripts/configure.sh [scalar|accelerate]
 #
 # Configures CMake and builds everything into ./build. Default backend is
-# Apple Accelerate on Darwin, otherwise the best handwritten variant for the
-# host arch. Build type is always Release with -O2 -DNDEBUG.
+# Apple Accelerate on Darwin, otherwise the handwritten scalar path. Build type
+# is always Release with -O2 -DNDEBUG.
 
 set -euo pipefail
 
 if [[ $# -gt 1 ]]; then
-    echo "usage: ./scripts/configure.sh [neon|avx2|scalar|accelerate]" >&2
+    echo "usage: ./scripts/configure.sh [scalar|accelerate]" >&2
     exit 2
 fi
 
 uname_s="$(uname -s)"
-uname_m="$(uname -m)"
 backend="${1:-}"
 
-# Default backend: prefer Apple Accelerate when available, otherwise pick the
-# best handwritten variant for the host arch.
+# Default backend: prefer Apple Accelerate when available, otherwise use the
+# single handwritten scalar implementation.
 if [[ -z "$backend" ]]; then
     if [[ "$uname_s" == "Darwin" ]]; then
         backend="accelerate"
     else
-        case "$uname_m" in
-            arm64|aarch64)        backend="neon" ;;
-            x86_64|amd64|AMD64)   backend="avx2" ;;
-            *)                    backend="scalar" ;;
-        esac
+        backend="scalar"
     fi
 fi
 
-# Validate + map backend → (driver src, prims src, prims compile flags, accelerate?).
+# Validate + map backend → selected source files.
 gemm_driver=""
-gemm_prims=""
-gemm_prims_flags=""
 attention_src="src/kernel/attention.cpp"
 core_src="src/kernel/core.cpp"
 optimizer_src="src/train/optimizer.cpp"
 use_accelerate="OFF"
 
 case "$backend" in
-    neon)
-        gemm_driver="src/kernel/gemm.cpp"
-        gemm_prims="src/kernel/gemm_neon.cpp"
-        ;;
-    avx2)
-        gemm_driver="src/kernel/gemm.cpp"
-        gemm_prims="src/kernel/gemm_avx2.cpp"
-        gemm_prims_flags="-mavx2;-mfma"
-        ;;
     scalar)
         gemm_driver="src/kernel/gemm.cpp"
-        gemm_prims="src/kernel/gemm_scalar.cpp"
         ;;
     accelerate)
         if [[ "$uname_s" != "Darwin" ]]; then
@@ -59,14 +42,13 @@ case "$backend" in
             exit 1
         fi
         gemm_driver="src/kernel/gemm_accelerate.cpp"
-        gemm_prims=""
         attention_src="src/kernel/attention_accelerate.cpp"
         core_src="src/kernel/core_accelerate.cpp"
         optimizer_src="src/train/optimizer_accelerate.cpp"
         use_accelerate="ON"
         ;;
     *)
-        echo "configure.sh: unknown backend '$backend' (use neon|avx2|scalar|accelerate)" >&2
+        echo "configure.sh: unknown backend '$backend' (use scalar|accelerate)" >&2
         exit 2
         ;;
 esac
@@ -78,8 +60,6 @@ cmake -S . -B build \
     "-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG" \
     -DMINI_LLM_KERNEL_BACKEND="$backend" \
     -DMINI_LLM_GEMM_DRIVER_SRC="$gemm_driver" \
-    -DMINI_LLM_GEMM_PRIMS_SRC="$gemm_prims" \
-    -DMINI_LLM_GEMM_PRIMS_FLAGS="$gemm_prims_flags" \
     -DMINI_LLM_ATTENTION_SRC="$attention_src" \
     -DMINI_LLM_CORE_SRC="$core_src" \
     -DMINI_LLM_OPTIMIZER_SRC="$optimizer_src" \

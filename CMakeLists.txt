@@ -36,16 +36,11 @@ add_library(model STATIC
   src/engine/io.cpp
   ${MINI_LLM_CORE_SRC}
   ${MINI_LLM_GEMM_DRIVER_SRC}
-  ${MINI_LLM_GEMM_PRIMS_SRC}
   ${MINI_LLM_ATTENTION_SRC}
   src/kernel/norm_rope.cpp
   src/kernel/backward.cpp
 )
 
-if(MINI_LLM_GEMM_PRIMS_SRC AND MINI_LLM_GEMM_PRIMS_FLAGS)
-  set_source_files_properties(${MINI_LLM_GEMM_PRIMS_SRC}
-    PROPERTIES COMPILE_OPTIONS "${MINI_LLM_GEMM_PRIMS_FLAGS}")
-endif()
 if(MINI_LLM_USE_ACCELERATE)
   target_link_libraries(model PUBLIC "-framework Accelerate")
 endif()

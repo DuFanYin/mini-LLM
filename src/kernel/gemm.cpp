@@ -5,19 +5,34 @@
 
 namespace kernel {
 
-// Inner-kernel primitives. Defined by exactly one of gemm_neon.cpp /
-// gemm_avx2.cpp / gemm_scalar.cpp, picked at CMake configure time via
-// MINI_LLM_KERNEL_BACKEND.
-namespace detail {
-float gemm_dot(const float* a, const float* b, std::size_t len);
-void gemm_axpy(float* y, const float* x, float scale, std::size_t K);
+namespace {
+
+float gemm_dot(const float* a, const float* b, std::size_t len) {
+    float s = 0.0f;
+    for (std::size_t i = 0; i < len; ++i) {
+        s += a[i] * b[i];
+    }
+    return s;
+}
+
+void gemm_axpy(float* y, const float* x, float scale, std::size_t K) {
+    for (std::size_t k = 0; k < K; ++k) {
+        y[k] += scale * x[k];
+    }
+}
+
 void gemm_dot4(const float* a,
                const float* b0, const float* b1, const float* b2, const float* b3,
                std::size_t K,
-               float* c0, float* c1, float* c2, float* c3);
-} // namespace detail
-
-namespace {
+               float* c0, float* c1, float* c2, float* c3) {
+    for (std::size_t k = 0; k < K; ++k) {
+        const float av = a[k];
+        *c0 += av * b0[k];
+        *c1 += av * b1[k];
+        *c2 += av * b2[k];
+        *c3 += av * b3[k];
+    }
+}
 
 // C += A * B^T with A [M×K], B [N×K] row-major, C [M×ldc].
 // Four output channels are accumulated together so each A row vector is loaded once per N tile.
@@ -27,11 +42,11 @@ void gemm_nt_accum(const float* A, const float* B, float* C, size_t M, size_t N,
         const float* arow = A + m * K;
         size_t n = 0;
         for (; n + 4 <= N; n += 4) {
-            detail::gemm_dot4(arow, B + (n + 0u) * K, B + (n + 1u) * K, B + (n + 2u) * K, B + (n + 3u) * K, K,
-                              &crow[n + 0u], &crow[n + 1u], &crow[n + 2u], &crow[n + 3u]);
+            gemm_dot4(arow, B + (n + 0u) * K, B + (n + 1u) * K, B + (n + 2u) * K, B + (n + 3u) * K, K,
+                      &crow[n + 0u], &crow[n + 1u], &crow[n + 2u], &crow[n + 3u]);
         }
         for (; n < N; ++n) {
-            crow[n] += detail::gemm_dot(arow, B + n * K, K);
+            crow[n] += gemm_dot(arow, B + n * K, K);
         }
     }
 }
@@ -44,7 +59,7 @@ void gemm_nn_accum(const float* A, const float* B, float* C, size_t M, size_t N,
         for (size_t n = 0; n < N; ++n) {
             const float scale = arow[n];
             if (scale != 0.0f) {
-                detail::gemm_axpy(crow, B + n * K, scale, K);
+                gemm_axpy(crow, B + n * K, scale, K);
             }
         }
     }
@@ -58,7 +73,7 @@ void gemm_tn_accum(const float* A, const float* B, float* C, size_t M, size_t N,
         for (size_t n = 0; n < N; ++n) {
             const float scale = arow[n];
             if (scale != 0.0f) {
-                detail::gemm_axpy(C + n * ldc, brow, scale, K);
+                gemm_axpy(C + n * ldc, brow, scale, K);
             }
         }
     }

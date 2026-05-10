@@ -1,9 +1,8 @@
 // Accelerate variant of the public gemm/linear ABI. Selected at CMake
 // configure time via MINI_LLM_KERNEL_BACKEND=accelerate. When selected this
 // translation unit replaces gemm.cpp wholesale and routes all GEMM-shaped
-// work through cblas_sgemm (vecLib in Accelerate.framework). The neon / avx2
-// / scalar variants stay available — pick a different backend value to use
-// the handwritten driver.
+// work through cblas_sgemm (vecLib in Accelerate.framework). Pick
+// backend=scalar to use the single handwritten driver in gemm.cpp.
 
 #include "kernel/kernel.h"
 
