@@ -1,7 +1,17 @@
+// Accelerate variant of the AdamW optimizer + grad-norm utilities. Selected by
+// the configure script only for MINI_LLM_KERNEL_BACKEND=accelerate. The public
+// ABI matches src/train/optimizer.cpp exactly; we just swap the per-tensor
+// primitives for vDSP / vForce calls so the bandwidth-bound passes hit closer
+// to the memory-system limit.
+
 #include "train/train.h"
+
+#define ACCELERATE_NEW_LAPACK
+#include <Accelerate/Accelerate.h>
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace train {
 
@@ -72,14 +82,12 @@ void clear(model::ModelWeights& g) {
 }
 
 void vector_add_sq_sum(const std::vector<float>& v, double* acc) {
-    const size_t n = v.size();
-    const float* p = v.data();
-    double s = 0.0;
-    for (size_t i = 0; i < n; ++i) {
-        const double x = static_cast<double>(p[i]);
-        s += x * x;
+    if (v.empty()) {
+        return;
     }
-    *acc += s;
+    float sum_sq = 0.0f;
+    vDSP_svesq(v.data(), 1, &sum_sq, v.size());
+    *acc += static_cast<double>(sum_sq);
 }
 
 double grad_l2_sq(const model::ModelWeights& g) {
@@ -110,11 +118,10 @@ double grad_l2_sq(const model::ModelWeights& g) {
 }
 
 void vector_scale(std::vector<float>& v, float scale) {
-    const size_t n = v.size();
-    float* p = v.data();
-    for (size_t i = 0; i < n; ++i) {
-        p[i] *= scale;
+    if (v.empty()) {
+        return;
     }
+    vDSP_vsmul(v.data(), 1, &scale, v.data(), 1, v.size());
 }
 
 void clip_grad(model::ModelWeights& g, float max_norm) {
@@ -154,6 +161,11 @@ void clip_grad(model::ModelWeights& g, float max_norm) {
     vector_scale(g.lm_head, scale);
 }
 
+// AdamW is memory-bandwidth bound: each element does a fused FMA + sqrt + div
+// over 4 streams (param, grad, m, v) with no reuse. Splitting it into a
+// sequence of vDSP calls multiplies the memory traffic by the number of passes
+// and ends up slower than the hand-written single-pass loop. The scalar fused
+// version below is what we ship even on the Accelerate backend.
 void adamw_update_vec(std::vector<float>& param, const std::vector<float>& grad, std::vector<float>& m,
                       std::vector<float>& v, size_t t, float lr, float beta1, float beta2, float eps,
                       float weight_decay) {
@@ -189,9 +201,9 @@ void adamw_update_decoder_layer(model::DecoderLayerWeights& param, const model::
                                 model::DecoderLayerWeights& m, model::DecoderLayerWeights& v, size_t t, float lr,
                                 float beta1, float beta2, float eps, float weight_decay) {
     adamw_update_vec(param.norm1.weight, grad.norm1.weight, m.norm1.weight, v.norm1.weight, t, lr, beta1, beta2, eps,
-                      weight_decay);
+                     weight_decay);
     adamw_update_vec(param.norm2.weight, grad.norm2.weight, m.norm2.weight, v.norm2.weight, t, lr, beta1, beta2, eps,
-                      weight_decay);
+                     weight_decay);
 
     adamw_update_vec(param.attention.q_proj.weight, grad.attention.q_proj.weight, m.attention.q_proj.weight,
                      v.attention.q_proj.weight, t, lr, beta1, beta2, eps, weight_decay);

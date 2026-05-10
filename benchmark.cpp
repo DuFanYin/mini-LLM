@@ -66,12 +66,12 @@ void print_subsection(const char* title) {
 
 void print_metric(const char* name, double ns_per_iter) {
     const double us_per_iter = ns_per_iter / 1000.0;
-    std::println("{:<44} {:>12.2f} us/iter", name, us_per_iter);
+    std::println("{:<52} {:>12.2f} us/iter", name, us_per_iter);
 }
 
 void print_metric_per_token(const char* name, double ns_per_token) {
     const double us_per_token = ns_per_token / 1000.0;
-    std::println("{:<44} {:>12.2f} us/token", name, us_per_token);
+    std::println("{:<52} {:>12.2f} us/token", name, us_per_token);
 }
 
 size_t parse_size(const char* s, size_t fallback) {
@@ -206,70 +206,70 @@ int main(int argc, char** argv) {
     // ---------- Inference ----------
     print_section("Inference");
 
-    print_subsection("Kernel Components");
-    print_metric("inference.kernel.rms_norm",
+    print_subsection("Individual Kernels");
+    print_metric("kernel: RMSNorm",
                  mean_ns([&] { kernel::rms_norm(x7.data(), w0.norm1.weight.data(), w0.norm1.eps, x7_norm.data(), norm_params); },
                          warmup, iters));
-    print_metric("inference.kernel.add",
+    print_metric("kernel: residual add",
                  mean_ns([&] { kernel::add(add_a.data(), add_b.data(), add_out.data(), add_params); }, warmup, iters));
-    print_metric("inference.kernel.linear_q",
+    print_metric("kernel: Q projection",
                  mean_ns([&] {
                      kernel::linear(x7_norm.data(), w0.attention.q_proj.weight.data(),
                                     w0.attention.q_proj.bias.empty() ? nullptr : w0.attention.q_proj.bias.data(),
                                     q_bench_out.data(), q_linear_params);
                  }, warmup, iters));
-    print_metric("inference.kernel.apply_rope",
+    print_metric("kernel: RoPE rotation",
                  mean_ns([&] {
                      std::copy(q.begin(), q.end(), q_rope.begin());
                      kernel::apply_rope(q_rope.data(), rope_positions.data(), rope_cache, rope_params);
                  }, warmup, iters));
-    print_metric("inference.kernel.softmax_stable",
+    print_metric("kernel: vocab softmax",
                  mean_ns([&] { kernel::softmax_stable(softmax_logits.data(), softmax_probs.data(), softmax_params); },
                          warmup, iters));
-    print_metric("inference.kernel.attention_prefill",
+    print_metric("kernel: attention prefill",
                  mean_ns([&] {
                      kernel::gqa_attention_prefill(q.data(), k_all.data(), v_all.data(), nullptr, ctx_bench.data(), nullptr,
                                                    attention_bench_params);
                  }, warmup, iters));
-    print_metric("inference.kernel.attention_decode",
+    print_metric("kernel: attention decode",
                  mean_ns([&] {
                      kernel::gqa_attention_decode(q_decode.data(), k_decode_all.data(), v_decode_all.data(), nullptr,
                                                   ctx_decode.data(), attention_decode_params);
                  }, warmup, iters));
-    print_metric("inference.kernel.mlp_gate_linear",
+    print_metric("kernel: MLP gate projection",
                  mean_ns([&] {
                      kernel::linear(x7_norm.data(), w0.mlp.gate.weight.data(),
                                     w0.mlp.gate.bias.empty() ? nullptr : w0.mlp.gate.bias.data(), gate_buf.data(),
                                     gate_params);
                  }, warmup, iters));
-    print_metric("inference.kernel.mlp_up_linear",
+    print_metric("kernel: MLP up projection",
                  mean_ns([&] {
                      kernel::linear(x7_norm.data(), w0.mlp.up.weight.data(),
                                     w0.mlp.up.bias.empty() ? nullptr : w0.mlp.up.bias.data(), up_buf.data(), up_params);
                  }, warmup, iters));
-    print_metric("inference.kernel.mlp_silu_mul",
+    print_metric("kernel: MLP SiLU gate multiply",
                  mean_ns([&] {
                      kernel::silu_mul(gate_buf.data(), up_buf.data(), hidden_buf.data(), silu_mul_params);
                  }, warmup, iters));
-    print_metric("inference.kernel.mlp_down_linear",
+    print_metric("kernel: MLP down projection",
                  mean_ns([&] {
                      kernel::linear(hidden_buf.data(), w0.mlp.down.weight.data(),
                                     w0.mlp.down.bias.empty() ? nullptr : w0.mlp.down.bias.data(), mlp_down_out.data(),
                                     down_params);
                  }, warmup, iters));
 
-    print_subsection("Pipeline Components");
-    print_metric("inference.pipeline.embed",
+    print_subsection("Model Stages");
+    print_metric("stage: token embedding",
                  mean_ns([&] {
                      std::vector<float> hidden;
                      embed_token_ids_into(tok_prefill, model->weights().token_embedding, d_model, hidden);
                  }, warmup, iters));
-    print_metric("inference.pipeline.prefill",
+    print_metric("stage: prefill whole prompt",
                  mean_ns([&] {
                      std::vector<float> hidden(tok_prefill.size() * d_model, 0.0f);
                      model->prefill(tok_prefill, hidden.data());
                  }, warmup, iters));
-    print_metric("inference.pipeline.decode_first_token",
+    print_metric("stage: decode first generated token",
                  mean_ns([&] {
                      model->reset_cache();
                     std::vector<float> hidden_prefill(tok_decode_prompt.size() * d_model, 0.0f);
@@ -277,7 +277,7 @@ int main(int argc, char** argv) {
                     std::vector<float> hidden_decode(d_model, 0.0f);
                     model->decode(decode_token, hidden_decode.data());
                  }, warmup, iters));
-    print_metric("inference.pipeline.decode_steady_state",
+    print_metric("stage: decode next generated token",
                  mean_ns_with_setup(
                      [&] {
                          model->reset_cache();
@@ -293,13 +293,13 @@ int main(int argc, char** argv) {
     model->prefill(tok_prefill, h_fwd7.data());
     LogitsOutput logits_frozen;
     project_logits_into(h_fwd7, seq_len_prefill, d_model, model->weights().lm_head, k_vocab, logits_frozen);
-    print_metric("inference.pipeline.project_logits",
+    print_metric("stage: project hidden to vocab logits",
                  mean_ns([&] {
                      LogitsOutput logits;
                      project_logits_into(h_fwd7, seq_len_prefill, d_model, model->weights().lm_head, k_vocab, logits);
                  }, warmup,
                          iters));
-    print_metric("inference.pipeline.argmax_from_hidden_row",
+    print_metric("stage: choose argmax token",
                  mean_ns([&] {
                      const size_t last = seq_len_prefill - 1;
                      for (size_t d = 0; d < d_model; ++d) {
@@ -309,10 +309,10 @@ int main(int argc, char** argv) {
                                               model->weights().lm_head, k_vocab, d_model);
                  }, warmup, iters));
 
-    print_subsection("End-to-End");
-    print_metric("inference.e2e.last_argmax",
+    print_subsection("End-to-End Paths");
+    print_metric("path: prefill then argmax last row",
                  mean_ns([&] { (void)task::last_argmax(*model, tok_decode_prompt); }, warmup, iters));
-    print_metric("inference.e2e.first_token_argmax",
+    print_metric("path: prefill then decode one token",
                  mean_ns([&] {
                      model->reset_cache();
                      std::vector<float> hidden_prefill(tok_decode_prompt.size() * d_model, 0.0f);
@@ -336,7 +336,7 @@ int main(int argc, char** argv) {
             }
         },
         warmup, iters);
-    print_metric_per_token("inference.e2e.decode_x32_tokens", decode_xn_ns / static_cast<double>(k_decode_steps));
+    print_metric_per_token("path: decode 32 generated tokens", decode_xn_ns / static_cast<double>(k_decode_steps));
 
     // ---------- Train ----------
     print_section("Train");
@@ -352,7 +352,6 @@ int main(int argc, char** argv) {
     std::vector<float> grad_hidden_out(tok_train.size() * d_model, 0.0f);
     std::vector<float> grad_lm_head(model->weights().lm_head.size(), 0.0f);
     std::vector<float> grad_embed(model->weights().token_embedding.size(), 0.0f);
-    model::ModelWeights grad_model_backward = clone_model(model->weights());
     const model::BlockForwardTape& tape0 = tapes[0];
 
     std::vector<float> dy_linear(tape0.q_rope.size(), 0.01f);
@@ -389,105 +388,173 @@ int main(int argc, char** argv) {
     const kernel::AttentionParams attn_bwd_params{
         tok_train.size(), cfg.num_heads, cfg.num_kv_heads, cfg.head_dim, tape0.past_len, total_kv_len, true, true};
 
-    const model::ModelWeights weights_ref = model->weights();
-    const model::ModelWeights adam_m_ref = adam_m;
-    const model::ModelWeights adam_v_ref = adam_v;
-    model::ModelWeights weights_opt = clone_model(weights_ref);
-    model::ModelWeights adam_m_opt = clone_model(adam_m_ref);
-    model::ModelWeights adam_v_opt = clone_model(adam_v_ref);
+    kernel::backward_hidden(ce_train.probs.data(), ce_train.targets.data(), ce_train.steps.data(), ce_train.valid_steps,
+                            model->weights().lm_head.data(), tok_train.size(), d_model, k_vocab,
+                            grad_hidden_out.data());
 
-    print_subsection("Kernel Components");
-    print_metric("train.kernel.backward_lm_head",
+    print_subsection("Individual Kernels");
+    print_metric("kernel: grad final vocab projection",
                  mean_ns([&] {
                      std::fill(grad_lm_head.begin(), grad_lm_head.end(), 0.0f);
                      kernel::backward_lm_head(hidden_train.data(), ce_train.probs.data(), ce_train.targets.data(),
                                               ce_train.steps.data(), ce_train.valid_steps, d_model, k_vocab,
                                               grad_lm_head.data());
                  }, warmup, iters));
-    print_metric("train.kernel.backward_hidden",
+    print_metric("kernel: grad hidden from logits",
                  mean_ns([&] {
                     kernel::backward_hidden(ce_train.probs.data(), ce_train.targets.data(), ce_train.steps.data(),
                                             ce_train.valid_steps, model->weights().lm_head.data(), tok_train.size(),
                                             d_model, k_vocab, grad_hidden_out.data());
                  }, warmup, iters));
-    print_metric("train.kernel.backward_embedding",
+    print_metric("kernel: grad token embedding",
                  mean_ns([&] {
                      std::fill(grad_embed.begin(), grad_embed.end(), 0.0f);
                     kernel::backward_embedding(tok_train.data(), tok_train.size(), hidden_train.data(), d_model,
                                                 grad_embed.data());
                  }, warmup, iters));
-    print_metric("train.kernel.linear_backward",
+    print_metric("kernel: linear layer backward",
                  mean_ns([&] {
                      kernel::linear_backward(tape0.norm1_out.data(), w0.attention.q_proj.weight.data(),
                                              !w0.attention.q_proj.bias.empty(), dy_linear.data(), dx_linear.data(),
                                              grad_w_linear.data(), grad_b_linear.data(), linear_bwd_params);
                  }, warmup, iters));
-    print_metric("train.kernel.rms_norm_backward",
+    print_metric("kernel: RMSNorm backward",
                  mean_ns([&] {
                      kernel::rms_norm_backward(tape0.hidden_after_attn.data(), w0.norm2.weight.data(), w0.norm2.eps,
                                                dy_norm.data(), dx_norm.data(), grad_norm_weight.data(), norm_bwd_params);
                  }, warmup, iters));
-    print_metric("train.kernel.silu_mul_backward",
+    print_metric("kernel: SiLU gate backward",
                  mean_ns([&] {
                      kernel::silu_mul_backward(tape0.gate.data(), tape0.up.data(), grad_hidden_mid.data(), grad_gate.data(),
                                                grad_up.data(), silu_mul_bwd_params);
                  }, warmup, iters));
-    print_metric("train.kernel.apply_rope_backward",
+    print_metric("kernel: RoPE backward",
                  mean_ns([&] {
                      kernel::apply_rope_backward(grad_q_rope.data(), grad_q_pre_rope.data(), tape0.positions.data(),
                                                  rope_cache_bwd, rope_bwd_params);
                  }, warmup, iters));
-    print_metric("train.kernel.attention_prefill_backward",
+    print_metric("kernel: attention backward",
                  mean_ns([&] {
                      kernel::gqa_attention_prefill_backward(
                         tape0.q_rope.data(), tape0_k_all.data(), tape0_v_all.data(), nullptr, tape0.attn_probs.data(),
                          grad_attn_ctx.data(), grad_q_attn.data(), grad_k_attn.data(), grad_v_attn.data(), attn_bwd_params);
                  }, warmup, iters));
 
-    print_subsection("Pipeline Components");
-    print_metric("train.pipeline.forward_for_training",
-                 mean_ns([&] {
-                     std::vector<float> hidden(tok_train.size() * d_model, 0.0f);
-                     model->forward_for_training(tok_train, tapes, hidden.data());
-                 }, warmup, iters));
-    print_metric("train.pipeline.cross_entropy",
-                 mean_ns([&] {
-                     CrossEntropyResult ce;
-                     cross_entropy_steps_into(logits_train, tok_train, train_prediction_steps, ce);
-                 }, warmup, iters));
-    print_metric("train.pipeline.model_backward",
-                 mean_ns([&] {
-                     clear(grad_model_backward);
-                     model->backward(tapes, grad_hidden_out, grad_model_backward, grad_hidden_out);
-                 }, warmup, iters));
-    print_metric("train.pipeline.adamw_update_model",
-                 mean_ns_with_setup(
-                     [&] {
-                         weights_opt = weights_ref;
-                         adam_m_opt = adam_m_ref;
-                         adam_v_opt = adam_v_ref;
-                     },
-                     [&] {
-                         adamw_update_model(weights_opt, grad_model_backward, adam_m_opt, adam_v_opt,
-                                            /*t=*/1, 0.004f, 0.9f, 0.95f, 1e-8f, 0.02f);
-                     },
-                     warmup, iters));
+    // Time each phase of train_step inline. This avoids the deep-copy "setup" that
+    // mean_ns_with_setup forced (and which thrashed cache between iterations), and
+    // exposes each phase under the exact same cache state it sees in train_step().
+    print_subsection("Training Step Breakdown");
+    TrainWorkspace pipeline_ws{};
+    size_t breakdown_step = 1;
+    int64_t t_prepare = 0, t_fwd = 0, t_proj = 0, t_ce = 0;
+    int64_t t_bwd_lm = 0, t_bwd_h = 0, t_model_bwd = 0, t_bwd_emb = 0;
+    int64_t t_clip = 0, t_adamw = 0;
 
-    print_subsection("End-to-End");
+    auto run_breakdown_step = [&](bool measure) {
+        const auto t0 = steady_clock::now();
+        pipeline_ws.prepare(*model);
+        const auto t1 = steady_clock::now();
+
+        pipeline_ws.hidden_states.resize(tok_train.size() * d_model);
+        model->forward_for_training(tok_train, pipeline_ws.tapes, pipeline_ws.hidden_states.data());
+        const auto t2 = steady_clock::now();
+
+        project_logits_steps_into(pipeline_ws.hidden_states.data(), tok_train.size(), d_model,
+                                  std::span<const size_t>(train_prediction_steps.data(),
+                                                          train_prediction_steps.size()),
+                                  model->weights().lm_head, k_vocab,
+                                  pipeline_ws.logits, pipeline_ws.gathered_hidden);
+        const auto t3 = steady_clock::now();
+
+        cross_entropy_steps_into(pipeline_ws.logits, tok_train, train_prediction_steps,
+                                 pipeline_ws.cross_entropy);
+        const auto t4 = steady_clock::now();
+
+        const engine::CrossEntropyResult& ce = pipeline_ws.cross_entropy;
+        kernel::backward_lm_head(pipeline_ws.hidden_states.data(), ce.probs.data(), ce.targets.data(),
+                                 ce.steps.data(), ce.valid_steps, d_model, k_vocab,
+                                 pipeline_ws.grad.lm_head.data());
+        const auto t5 = steady_clock::now();
+
+        pipeline_ws.grad_hidden_out.resize(tok_train.size() * d_model);
+        kernel::backward_hidden(ce.probs.data(), ce.targets.data(), ce.steps.data(), ce.valid_steps,
+                                model->weights().lm_head.data(), tok_train.size(), d_model, k_vocab,
+                                pipeline_ws.grad_hidden_out.data());
+        const auto t6 = steady_clock::now();
+
+        model->backward(pipeline_ws.tapes, pipeline_ws.grad_hidden_out, pipeline_ws.grad,
+                        pipeline_ws.grad_hidden_in);
+        const auto t7 = steady_clock::now();
+
+        kernel::backward_embedding(tok_train.data(), tok_train.size(), pipeline_ws.grad_hidden_in.data(),
+                                   d_model, pipeline_ws.grad.token_embedding.data());
+        const auto t8 = steady_clock::now();
+
+        clip_grad(pipeline_ws.grad, 1.0f);
+        const auto t9 = steady_clock::now();
+
+        adamw_update_model(model->mutable_weights(), pipeline_ws.grad, adam_m, adam_v, breakdown_step,
+                           0.004f, 0.9f, 0.95f, 1e-8f, 0.02f);
+        const auto t10 = steady_clock::now();
+
+        if (measure) {
+            using std::chrono::duration_cast;
+            using std::chrono::nanoseconds;
+            t_prepare   += duration_cast<nanoseconds>(t1  - t0).count();
+            t_fwd       += duration_cast<nanoseconds>(t2  - t1).count();
+            t_proj      += duration_cast<nanoseconds>(t3  - t2).count();
+            t_ce        += duration_cast<nanoseconds>(t4  - t3).count();
+            t_bwd_lm    += duration_cast<nanoseconds>(t5  - t4).count();
+            t_bwd_h     += duration_cast<nanoseconds>(t6  - t5).count();
+            t_model_bwd += duration_cast<nanoseconds>(t7  - t6).count();
+            t_bwd_emb   += duration_cast<nanoseconds>(t8  - t7).count();
+            t_clip      += duration_cast<nanoseconds>(t9  - t8).count();
+            t_adamw     += duration_cast<nanoseconds>(t10 - t9).count();
+        }
+        ++breakdown_step;
+    };
+
+    for (size_t i = 0; i < train_warmup; ++i) run_breakdown_step(false);
+    for (size_t i = 0; i < train_iters; ++i) run_breakdown_step(true);
+
+    const double inv_iters = 1.0 / static_cast<double>(train_iters);
+    const double prepare_avg     = static_cast<double>(t_prepare)   * inv_iters;
+    const double fwd_avg         = static_cast<double>(t_fwd)       * inv_iters;
+    const double proj_avg        = static_cast<double>(t_proj)      * inv_iters;
+    const double ce_avg          = static_cast<double>(t_ce)        * inv_iters;
+    const double bwd_lm_avg      = static_cast<double>(t_bwd_lm)    * inv_iters;
+    const double bwd_h_avg       = static_cast<double>(t_bwd_h)     * inv_iters;
+    const double model_bwd_avg   = static_cast<double>(t_model_bwd) * inv_iters;
+    const double bwd_emb_avg     = static_cast<double>(t_bwd_emb)   * inv_iters;
+    const double clip_avg        = static_cast<double>(t_clip)      * inv_iters;
+    const double adamw_avg       = static_cast<double>(t_adamw)     * inv_iters;
+
+    print_metric("step: reset gradient buffers", prepare_avg);
+    print_metric("step: forward training pass", fwd_avg);
+    print_metric("step: project selected logits", proj_avg);
+    print_metric("step: cross entropy loss", ce_avg);
+    print_metric("step: grad final vocab projection", bwd_lm_avg);
+    print_metric("step: grad hidden from logits", bwd_h_avg);
+    print_metric("step: transformer backward pass", model_bwd_avg);
+    print_metric("step: grad token embedding", bwd_emb_avg);
+    print_metric("step: gradient clipping", clip_avg);
+    print_metric("step: AdamW optimizer update", adamw_avg);
+
+    const double train_phase_sum_ns = prepare_avg + fwd_avg + proj_avg + ce_avg + bwd_lm_avg + bwd_h_avg +
+                                      model_bwd_avg + bwd_emb_avg + clip_avg + adamw_avg;
+    print_metric("check: sum of listed train steps", train_phase_sum_ns);
+
+    print_subsection("End-to-End Training");
     TrainWorkspace workspace{};
-    size_t adam_step = 1;
-    print_metric("train.e2e.train_step",
-                 mean_ns([&] {
-                     (void)train_step(*model, tok_train, train_prediction_steps, adam_step, 0.004f, 0.9f, 0.95f,
-                                      1e-8f, 0.02f, 1.0f, adam_m, adam_v, workspace);
-                     ++adam_step;
-                 }, train_warmup, train_iters));
+    size_t adam_step = breakdown_step;
     const double train_step_ns = mean_ns([&] {
         (void)train_step(*model, tok_train, train_prediction_steps, adam_step, 0.004f, 0.9f, 0.95f, 1e-8f, 0.02f, 1.0f,
                          adam_m, adam_v, workspace);
         ++adam_step;
     }, train_warmup, train_iters);
-    print_metric_per_token("train.e2e.train_step_per_token", train_step_ns / static_cast<double>(tok_train.size()));
+    print_metric("full train_step()", train_step_ns);
+    print_metric_per_token("full train_step() per token", train_step_ns / static_cast<double>(tok_train.size()));
+    print_metric("check: unlisted train_step overhead", train_step_ns - train_phase_sum_ns);
 
     std::println("");
     std::println("done.");
