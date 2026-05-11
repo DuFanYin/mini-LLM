@@ -124,7 +124,7 @@ void save_model(const std::string& path, const model::ModelConfig& config, const
         detail::write_decoder_layer(out, layer);
     }
     detail::write_vec_f32(out, weights.token_embedding);
-    detail::write_vec_f32(out, weights.lm_head);
+    detail::write_vec_f32(out, weights.output_projection);
 
     if (!out.good()) {
         throw std::runtime_error("save_model: failed while writing: " + path);
@@ -158,12 +158,13 @@ SavedModel load_model(const std::string& path) {
 
     cp.weights.vocab_size = static_cast<size_t>(detail::read_u64(in));
     const size_t num_layers = static_cast<size_t>(detail::read_u64(in));
+    cp.config.num_layers = num_layers;
     cp.weights.layers.resize(num_layers);
     for (size_t i = 0; i < num_layers; ++i) {
         cp.weights.layers[i] = detail::read_decoder_layer(in);
     }
     cp.weights.token_embedding = detail::read_vec_f32(in);
-    cp.weights.lm_head = detail::read_vec_f32(in);
+    cp.weights.output_projection = detail::read_vec_f32(in);
 
     if (!in.good() && !in.eof()) {
         throw std::runtime_error("load_model: failed while reading: " + path);

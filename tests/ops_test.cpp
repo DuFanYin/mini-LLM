@@ -92,7 +92,7 @@ TEST(AttentionOpsTest, CausalMaskBlocksFutureTokens) {
     attention_params.use_cache = false;
 
     std::vector<float> ctx(2, 0.0f);
-    kernel::gqa_attention_prefill(q.data(), k.data(), v.data(), nullptr, ctx.data(), nullptr, attention_params);
+    kernel::gqa_attention_forward(q.data(), k.data(), v.data(), nullptr, ctx.data(), nullptr, attention_params);
     ASSERT_EQ(ctx.size(), 2u);
     EXPECT_NEAR(ctx[0], 1.0f, 1e-5f); // first token can only see token 0
     EXPECT_NEAR(ctx[1], 2.0f, 1e-5f); // second token sees both, equal logits => mean
@@ -117,7 +117,7 @@ TEST(AttentionOpsTest, GQAMappingUsesGroupedKvHeads) {
     attention_params.use_cache = false;
 
     std::vector<float> ctx(4, 0.0f);
-    kernel::gqa_attention_prefill(q.data(), k.data(), v.data(), nullptr, ctx.data(), nullptr, attention_params);
+    kernel::gqa_attention_forward(q.data(), k.data(), v.data(), nullptr, ctx.data(), nullptr, attention_params);
     ASSERT_EQ(ctx.size(), 4u);
     // group_size = 2 => qh 0,1 -> kv0 mean(10,30)=20; qh 2,3 -> kv1 mean(20,40)=30
     EXPECT_NEAR(ctx[0], 20.0f, 1e-5f);

@@ -8,18 +8,7 @@
 #include <vector>
 
 namespace model {
-
-void copy_token_major_to_head_major(const float* token_major, float* head_major, size_t seq_len, size_t num_heads,
-                                    size_t head_dim) {
-    for (size_t si = 0; si < seq_len; ++si) {
-        for (size_t h = 0; h < num_heads; ++h) {
-            for (size_t d = 0; d < head_dim; ++d) {
-                head_major[(h * seq_len + si) * head_dim + d] =
-                    token_major[kernel::idx3(si, h, d, num_heads, head_dim)];
-            }
-        }
-    }
-}
+namespace {
 
 // Attention submodule: pre-norm -> QKV -> RoPE -> KV -> GQA -> o_proj -> residual with input. Writes post-attention
 // hidden (before second norm / MLP) to `hidden_after_attn_out`. On the inference path (tape == nullptr) intermediate
@@ -84,8 +73,9 @@ void forward_attention_block(const ModelConfig& config, const DecoderLayerWeight
         tape->positions.assign(positions_ptr, positions_ptr + seq_len);
         tape->past_len = past_len;
         tape->x_in.assign(x_in, x_in + seq_len * config.d_model);
-        tape->q_rope = tape->q_pre_rope;
-        tape->k_rope = tape->k_pre_rope;
+        // RoPE is in-place on Q/K; swap so linear output lives in q_rope/k_rope buffers (no copy).
+        std::swap(tape->q_pre_rope, tape->q_rope);
+        std::swap(tape->k_pre_rope, tape->k_rope);
     }
 
     // --- RoPE on current Q/K ---
@@ -115,10 +105,24 @@ void forward_attention_block(const ModelConfig& config, const DecoderLayerWeight
         std::vector<float>& v_head_major = (tape != nullptr) ? tape->v_all : v_head_major_local;
         k_head_major.resize(seq_len * kv_proj_dim);
         v_head_major.resize(seq_len * kv_proj_dim);
-        copy_token_major_to_head_major(k_rope.data(), k_head_major.data(), seq_len, config.num_kv_heads,
-                                       config.head_dim);
-        copy_token_major_to_head_major(v_proj.data(), v_head_major.data(), seq_len, config.num_kv_heads,
-                                       config.head_dim);
+        {
+            const float* k_src = k_rope.data();
+            const float* v_src = v_proj.data();
+            float* k_dst = k_head_major.data();
+            float* v_dst = v_head_major.data();
+            const size_t nh = config.num_kv_heads;
+            const size_t hd = config.head_dim;
+            for (size_t si = 0; si < seq_len; ++si) {
+                for (size_t h = 0; h < nh; ++h) {
+                    for (size_t d = 0; d < hd; ++d) {
+                        const size_t src_i = kernel::idx3(si, h, d, nh, hd);
+                        const size_t dst_i = (h * seq_len + si) * hd + d;
+                        k_dst[dst_i] = k_src[src_i];
+                        v_dst[dst_i] = v_src[src_i];
+                    }
+                }
+            }
+        }
         k_all_ptr = k_head_major.data();
         v_all_ptr = v_head_major.data();
     }
@@ -154,26 +158,20 @@ void forward_attention_block(const ModelConfig& config, const DecoderLayerWeight
     attention_params.causal = input.causal;
     attention_params.use_cache = input.use_cache;
 
-    // --- GQA: decode vs prefill path (prefill + tape stores softmax for backward) ---
+    // --- GQA: decode vs prefill (tape stores attn probs for backward when training) ---
     const bool decode_path = input.is_decode || (input.use_cache && seq_len == 1 && !input.is_prefill);
     std::vector<float> attention_context_local;
     std::vector<float>& attention_context = (tape != nullptr) ? tape->attn_ctx : attention_context_local;
     attention_context.resize(seq_len * q_proj_dim);
     float* attention_context_data = attention_context.data();
-    if (decode_path) {
-        kernel::gqa_attention_decode(q_rope.data(), k_all_ptr, v_all_ptr,
-                                     input.attention_mask.empty() ? nullptr : input.attention_mask.data(),
-                                     attention_context_data, attention_params);
-    } else if (tape != nullptr) {
+    float* attn_probs_out = nullptr;
+    if (!decode_path && tape != nullptr) {
         tape->attn_probs.assign(seq_len * config.num_heads * total_kv_len, 0.0f);
-        kernel::gqa_attention_prefill(q_rope.data(), k_all_ptr, v_all_ptr,
-                                      input.attention_mask.empty() ? nullptr : input.attention_mask.data(),
-                                      attention_context_data, tape->attn_probs.data(), attention_params);
-    } else {
-        kernel::gqa_attention_prefill(q_rope.data(), k_all_ptr, v_all_ptr,
-                                      input.attention_mask.empty() ? nullptr : input.attention_mask.data(),
-                                      attention_context_data, nullptr, attention_params);
+        attn_probs_out = tape->attn_probs.data();
     }
+    kernel::gqa_attention_forward(q_rope.data(), k_all_ptr, v_all_ptr,
+                                  input.attention_mask.empty() ? nullptr : input.attention_mask.data(),
+                                  attention_context_data, attn_probs_out, attention_params);
 
     const kernel::LinearParams o_linear_params{seq_len, q_proj_dim, config.d_model};
     std::vector<float> attention_output_local;
@@ -244,15 +242,19 @@ void forward_decoder_layer(const ModelConfig& config, const DecoderLayerWeights&
     kernel::add(hidden_after_attn_data, mlp_output_data, hidden_out, add_params);
 }
 
-void forward_model(const ModelConfig& config, const std::vector<DecoderLayerState>& layers, const ForwardInput& input,
+} // namespace
+
+void forward_model(const ModelConfig& config, const std::vector<DecoderLayerWeights*>& layer_weights,
+                   std::vector<kernel::RopeCache>& rope_q, std::vector<kernel::RopeCache>& rope_k,
+                   const ForwardInput& input,
                    CacheBridge& cache, float* hidden_out, std::vector<BlockForwardTape>* layer_tapes) {
     std::vector<float> layer_hidden_a(input.seq_len * config.d_model, 0.0f);
     std::vector<float> layer_hidden_b(input.seq_len * config.d_model, 0.0f);
     const float* current_hidden =
         (input.hidden_states_ptr != nullptr) ? input.hidden_states_ptr : input.hidden_states.data();
     bool use_a = true;
-    for (size_t layer_id = 0; layer_id < layers.size(); ++layer_id) {
-        const bool is_last_layer = (layer_id + 1u == layers.size());
+    for (size_t layer_id = 0; layer_id < layer_weights.size(); ++layer_id) {
+        const bool is_last_layer = (layer_id + 1u == layer_weights.size());
 
         ForwardInput layer_in;
         layer_in.seq_len = input.seq_len;
@@ -278,8 +280,8 @@ void forward_model(const ModelConfig& config, const std::vector<DecoderLayerStat
             layer_out = use_a ? layer_hidden_a.data() : layer_hidden_b.data();
         }
         BlockForwardTape* tape = (layer_tapes != nullptr) ? &(*layer_tapes)[layer_id] : nullptr;
-        forward_decoder_layer(config, *layers[layer_id].weights, layer_in, cache_view, cache, layers[layer_id].rope_q,
-                              layers[layer_id].rope_k, layer_out, tape);
+        forward_decoder_layer(config, *layer_weights[layer_id], layer_in, cache_view, cache, rope_q[layer_id],
+                              rope_k[layer_id], layer_out, tape);
 
         if (!is_last_layer) {
             current_hidden = layer_out;

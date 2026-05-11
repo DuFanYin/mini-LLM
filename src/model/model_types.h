@@ -18,6 +18,7 @@ struct ModelConfig {
     float rope_base = 10000.0f;
     size_t rope_dim = 0;
     float rms_norm_eps = 1e-5f;
+    size_t num_layers = 0;
 };
 
 struct RMSNormWeights {
@@ -58,7 +59,7 @@ struct DecoderLayerWeights {
 struct ModelWeights {
     std::vector<DecoderLayerWeights> layers;
     std::vector<float> token_embedding;
-    std::vector<float> lm_head;
+    std::vector<float> output_projection;
     size_t vocab_size = 0;
 };
 

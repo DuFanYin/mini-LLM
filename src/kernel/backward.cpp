@@ -4,9 +4,10 @@
 
 namespace kernel {
 
-void backward_lm_head(const float* hidden_states, const float* probs, const uint32_t* targets, const size_t* steps,
-                      size_t valid_steps, size_t d_model, size_t vocab_size, float* grad_lm_head) {
-    std::fill(grad_lm_head, grad_lm_head + vocab_size * d_model, 0.0f);
+void backward_output_projection(const float* hidden_states, const float* probs, const uint32_t* targets,
+                                const size_t* steps, size_t valid_steps, size_t d_model, size_t vocab_size,
+                                float* grad_output_projection) {
+    std::fill(grad_output_projection, grad_output_projection + vocab_size * d_model, 0.0f);
     if (valid_steps == 0) {
         return;
     }
@@ -22,14 +23,14 @@ void backward_lm_head(const float* hidden_states, const float* probs, const uint
             dlogit *= inv_steps;
             const size_t woff = v * d_model;
             for (size_t d = 0; d < d_model; ++d) {
-                grad_lm_head[woff + d] += dlogit * hidden_row[d];
+                grad_output_projection[woff + d] += dlogit * hidden_row[d];
             }
         }
     }
 }
 
 void backward_hidden(const float* probs, const uint32_t* targets, const size_t* steps, size_t valid_steps,
-                     const float* lm_head, size_t total_steps, size_t d_model, size_t vocab_size,
+                     const float* output_projection, size_t total_steps, size_t d_model, size_t vocab_size,
                      float* grad_hidden_out) {
     std::fill(grad_hidden_out, grad_hidden_out + total_steps * d_model, 0.0f);
     if (valid_steps == 0) {
@@ -47,7 +48,7 @@ void backward_hidden(const float* probs, const uint32_t* targets, const size_t* 
             dlogit *= inv_steps;
             const size_t woff = v * d_model;
             for (size_t d = 0; d < d_model; ++d) {
-                grad_hidden_out[step * d_model + d] += dlogit * lm_head[woff + d];
+                grad_hidden_out[step * d_model + d] += dlogit * output_projection[woff + d];
             }
         }
     }

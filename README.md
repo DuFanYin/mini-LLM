@@ -40,7 +40,7 @@ Build outputs land in `build/`: `train`, `inference`, `benchmark`, `tests_runner
 
 ## Default model
 
-Defined by `model::MiniLlm::architecture()` and used by `MiniLlm::build(vocab, seed, num_layers)`:
+Random init: `MiniLlm::init_random(vocab, seed)` (hyperparams fixed in `mini_llm.cpp`). Checkpoint load: `MiniLlm::init_load(path, max_seq_len)` or `engine::load_model`.
 
 | field | value |
 |---|---|
@@ -53,7 +53,7 @@ Defined by `model::MiniLlm::architecture()` and used by `MiniLlm::build(vocab, s
 | `num_layers` | 4 |
 | `vocab_size` | 32 (= `task::n_vocab()`) |
 
-Param count formula (see `src/model/mini_llm.cpp`):
+Param count formula (comment in `src/model/mini_llm.cpp`):
 `total = num_layers * 592_384 + 512 * vocab_size` → ~2,384,384 fp32 params at the defaults.
 
 ## Task: Which-Span

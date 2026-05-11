@@ -12,7 +12,7 @@ There is no abstract `Model` interface. All callers use `model::MiniLlm` directl
 The default model is built as:
 
 ```cpp
-model::MiniLlm::build(task::n_vocab(), seed, 4)
+auto m = model::MiniLlm::init_random(task::n_vocab(), seed);
 ```
 
 Default shape:
@@ -51,7 +51,7 @@ Layer roles:
 - `apps` wire command-line arguments, logging, save/load calls, and top-level loops.
 - `task` owns Which-Span data generation, parsing, prediction positions, and evaluation.
 - `train` owns one-step training, reusable training buffers, gradient utilities, and AdamW.
-- `model` owns `MiniLlm`, model weights/config, per-layer runtime state, forward execution, backward execution, and cache use.
+- `model` owns `MiniLlm`, model weights/config, two-step random init (`MiniLlm::build` then `init_random`), optional `init_load`, one-shot `load_mini_llm`, per-layer runtime state, forward/backward execution, and cache use.
 - `engine` owns runtime utilities shared by callers: KV cache, validation, trained-model I/O, decode helpers, embedding helpers.
 - `kernel` owns shape-based math functions. It has no model/task/train object dependency.
 
@@ -70,20 +70,20 @@ Allowed dependencies:
 
 - `ModelConfig config_`
 - `ModelWeights weights_`
-- `std::vector<DecoderLayerState> layer_states_`
+- `std::vector<DecoderLayerState> layers_`
 - optional `std::unique_ptr<engine::KVCache> cache_`
 
-`ModelWeights` contains token embeddings, decoder-layer weights, and LM-head weights. `DecoderLayerState` stores per-layer weight pointers plus RoPE cache state used by execution.
+`ModelWeights` contains token embeddings, decoder-layer weights, and output projection weights (`output_projection`). `DecoderLayerState` stores per-layer weight pointers plus RoPE cache state used by execution.
 
 Construction paths:
 
 - `MiniLlm(config, weights)` validates and stores caller-provided config/weights.
-- `MiniLlm::build(vocab_size, seed, num_layers)` creates fresh random weights.
-- `load_mini_llm(path, max_seq_len)` loads config/weights through `engine`, constructs `MiniLlm`, then configures cache capacity.
+- `MiniLlm::init_random(vocab, seed)` uses the hard-coded `ModelConfig` in `mini_llm.cpp`, allocates matching tensors, and fills linears/embeddings with the built-in random scheme. `init_load(path)` loads config/weights from disk and configures cache.
+- `MiniLlm::init_load(path, max_seq_len)` is a convenience: load from `engine` + construct `MiniLlm` + `configure_cache` (no prior `build`).
 
 Public runtime methods:
 
-- `forward_for_training(token_ids, output, tape)` embeds the full sequence, runs the decoder stack without cache, and fills training tapes.
+- `forward_train(token_ids, output, tape)` embeds the full sequence, runs the decoder stack without cache, and fills training tapes.
 - `prefill(token_ids, output)` resets cache state for the request, runs the full prompt, and writes all prompt hidden rows.
 - `decode(token_id, output)` appends one token to the existing cache context and writes one hidden row.
 - `backward(tapes, grad_hidden_out, grad, grad_hidden_in)` runs decoder-stack backward.
@@ -125,9 +125,9 @@ Training forward passes run with cache disabled and tapes enabled. Inference pre
 
 Training backward starts above the decoder stack:
 
-1. Selected hidden rows are projected through the LM head.
+1. Selected hidden rows are projected through the output projection (vocabulary logits).
 2. Cross entropy produces loss, accuracy, and gradient rows.
-3. LM-head backward accumulates `grad.lm_head`.
+3. Output-projection backward accumulates `grad.output_projection`.
 4. Hidden-row backward scatters top gradients into the full hidden tensor.
 5. `MiniLlm::backward` walks decoder layers in reverse.
 6. Token-embedding backward scatters final input gradients into `grad.token_embedding`.
@@ -160,9 +160,9 @@ I/O path:
 
 1. `engine::save_model(path, config, weights)` writes config followed by tensors in `ModelWeights` order.
 2. `engine::load_model(path)` returns `SavedModel { config, weights }`.
-3. `model::load_mini_llm(path, max_seq_len)` turns `SavedModel` into a runnable `MiniLlm`.
+3. `model::MiniLlm::init_load(path, max_seq_len)` turns `SavedModel` into a runnable `MiniLlm`.
 
-Use `engine::save_model` for writes and `model::load_mini_llm` for reads that need an executable model.
+Use `engine::save_model` for writes and `MiniLlm::init_load` for executable-model reads.
 
 ## Kernel Boundary
 
@@ -173,7 +173,7 @@ Kernel groups currently cover:
 - linear projection and its backward path
 - residual/pointwise helpers
 - RMSNorm and RoPE forward/backward
-- attention prefill, decode, and backward paths
+- attention: `gqa_attention_forward` (optional `attn_probs_out` for training tape) + `gqa_attention_backward`
 - cross entropy and selected-row gradient helpers
 - embedding backward
 - gradient norm, clearing, clipping, and optimizer helpers where they operate on raw tensor storage
@@ -197,7 +197,7 @@ One `train_step`:
 2. Runs `MiniLlm::forward_for_training`.
 3. Projects only `prediction_steps` into logits.
 4. Computes loss and accuracy.
-5. Backprops through LM head and selected hidden rows.
+5. Backprops through output projection and selected hidden rows.
 6. Calls `MiniLlm::backward`.
 7. Backprops into token embeddings.
 8. Clips gradients.
@@ -253,7 +253,7 @@ Training app:
 
 Inference app:
 
-1. Load `MiniLlm` with `model::load_mini_llm`.
+1. Load `MiniLlm` with `MiniLlm::init_load`.
 2. Parse six fields: `PREFIX SPAN_A MIDDLE SPAN_B SUFFIX Q`.
 3. Build the prompt through the query token.
 4. Call `prefill` once.

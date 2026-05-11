@@ -14,7 +14,7 @@ TrainBatchMetrics compute_batch_metrics(model::MiniLlm& m, const std::vector<uin
     std::vector<float> gathered;
     engine::LogitsOutput logits;
     engine::project_logits_steps_into(hidden_out.data(), token_ids.size(), m.d_model(),
-                                      std::span<const size_t>(steps.data(), steps.size()), weights.lm_head,
+                                      std::span<const size_t>(steps.data(), steps.size()), weights.output_projection,
                                       weights.vocab_size, logits, gathered);
     engine::CrossEntropyResult ce;
     engine::cross_entropy_steps_into(logits, token_ids, steps, ce);
@@ -34,7 +34,7 @@ bool is_next_prediction_correct(model::MiniLlm& m, const std::vector<uint32_t>& 
 
     const size_t vocab_size = weights.vocab_size;
     std::vector<float> logits_row;
-    engine::logits_from_hidden_row(std::span<const float>(hidden_out.data() + step * d_model, d_model), weights.lm_head,
+    engine::logits_from_hidden_row(std::span<const float>(hidden_out.data() + step * d_model, d_model), weights.output_projection,
                                    vocab_size, d_model, logits_row);
     size_t argmax = 0;
     float best = logits_row[0];

@@ -81,7 +81,7 @@ int main(int argc, char** argv) {
 
     constexpr size_t kVocab = task::n_vocab();
     std::unique_ptr<model::MiniLlm> model =
-        std::make_unique<model::MiniLlm>(model::MiniLlm::build(/*vocab_size=*/kVocab, model_seed, /*num_layers=*/4));
+        std::make_unique<model::MiniLlm>(model::MiniLlm::init_random(/*vocab_size=*/kVocab, model_seed));
     model::ModelWeights adam_m = clone_model(model->weights());
     model::ModelWeights adam_v = clone_model(model->weights());
 

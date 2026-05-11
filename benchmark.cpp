@@ -106,10 +106,9 @@ int main(int argc, char** argv) {
                  train_iters);
 
     constexpr size_t k_vocab = 32;
-    constexpr size_t k_num_layers = 4;
     constexpr uint32_t k_model_seed = 42;
-    std::unique_ptr<model::MiniLlm> model = std::make_unique<model::MiniLlm>(
-        model::MiniLlm::build(/*vocab_size=*/k_vocab, /*seed=*/k_model_seed, /*num_layers=*/k_num_layers));
+    std::unique_ptr<model::MiniLlm> model =
+        std::make_unique<model::MiniLlm>(model::MiniLlm::init_random(/*vocab_size=*/k_vocab, k_model_seed));
     const model::ModelConfig& cfg = model->config();
     model::ModelWeights adam_m = clone_model(model->weights());
     model::ModelWeights adam_v = clone_model(model->weights());
@@ -224,17 +223,17 @@ int main(int argc, char** argv) {
                      kernel::apply_rope(q_rope.data(), rope_positions.data(), rope_cache, rope_params);
                  }, warmup, iters));
     print_metric("kernel: vocab softmax",
-                 mean_ns([&] { kernel::softmax_stable(softmax_logits.data(), softmax_probs.data(), softmax_params); },
+                 mean_ns([&] { kernel::softmax(softmax_logits.data(), softmax_probs.data(), softmax_params); },
                          warmup, iters));
     print_metric("kernel: attention prefill",
                  mean_ns([&] {
-                     kernel::gqa_attention_prefill(q.data(), k_all.data(), v_all.data(), nullptr, ctx_bench.data(), nullptr,
+                     kernel::gqa_attention_forward(q.data(), k_all.data(), v_all.data(), nullptr, ctx_bench.data(), nullptr,
                                                    attention_bench_params);
                  }, warmup, iters));
     print_metric("kernel: attention decode",
                  mean_ns([&] {
-                     kernel::gqa_attention_decode(q_decode.data(), k_decode_all.data(), v_decode_all.data(), nullptr,
-                                                  ctx_decode.data(), attention_decode_params);
+                     kernel::gqa_attention_forward(q_decode.data(), k_decode_all.data(), v_decode_all.data(), nullptr,
+                                                   ctx_decode.data(), nullptr, attention_decode_params);
                  }, warmup, iters));
     print_metric("kernel: MLP gate projection",
                  mean_ns([&] {
@@ -292,11 +291,11 @@ int main(int argc, char** argv) {
     std::vector<float> h_fwd7(tok_prefill.size() * d_model, 0.0f);
     model->prefill(tok_prefill, h_fwd7.data());
     LogitsOutput logits_frozen;
-    project_logits_into(h_fwd7, seq_len_prefill, d_model, model->weights().lm_head, k_vocab, logits_frozen);
+    project_logits_into(h_fwd7, seq_len_prefill, d_model, model->weights().output_projection, k_vocab, logits_frozen);
     print_metric("stage: project hidden to vocab logits",
                  mean_ns([&] {
                      LogitsOutput logits;
-                     project_logits_into(h_fwd7, seq_len_prefill, d_model, model->weights().lm_head, k_vocab, logits);
+                     project_logits_into(h_fwd7, seq_len_prefill, d_model, model->weights().output_projection, k_vocab, logits);
                  }, warmup,
                          iters));
     print_metric("stage: choose argmax token",
@@ -306,7 +305,7 @@ int main(int argc, char** argv) {
                          row_buf[d] = h_fwd7[last * d_model + d];
                      }
                      (void)argmax_from_hidden(std::span<const float>(row_buf.data(), row_buf.size()),
-                                              model->weights().lm_head, k_vocab, d_model);
+                                              model->weights().output_projection, k_vocab, d_model);
                  }, warmup, iters));
 
     print_subsection("End-to-End Paths");
@@ -319,7 +318,7 @@ int main(int argc, char** argv) {
                      model->prefill(tok_decode_prompt, hidden_prefill.data());
                      model->decode(decode_token, row_buf.data());
                      (void)argmax_from_hidden(std::span<const float>(row_buf.data(), row_buf.size()),
-                                              model->weights().lm_head, k_vocab, d_model);
+                                              model->weights().output_projection, k_vocab, d_model);
                  }, warmup, iters));
     const double decode_xn_ns = mean_ns_with_setup(
         [&] {
@@ -331,7 +330,7 @@ int main(int argc, char** argv) {
             uint32_t token = decode_token;
             for (size_t step = 0; step < k_decode_steps; ++step) {
                 model->decode(token, row_buf.data());
-                token = argmax_from_hidden(std::span<const float>(row_buf.data(), row_buf.size()), model->weights().lm_head,
+                token = argmax_from_hidden(std::span<const float>(row_buf.data(), row_buf.size()), model->weights().output_projection,
                                            k_vocab, d_model);
             }
         },
@@ -343,14 +342,14 @@ int main(int argc, char** argv) {
 
     std::vector<model::BlockForwardTape> tapes(model->num_layers());
     std::vector<float> hidden_train(tok_train.size() * d_model, 0.0f);
-    model->forward_for_training(tok_train, tapes, hidden_train.data());
+    model->forward_train(tok_train, tapes, hidden_train.data());
     LogitsOutput logits_train;
-    project_logits_into(hidden_train, tok_train.size(), d_model, model->weights().lm_head, k_vocab, logits_train);
+    project_logits_into(hidden_train, tok_train.size(), d_model, model->weights().output_projection, k_vocab, logits_train);
     CrossEntropyResult ce_train;
     const std::vector<size_t> train_prediction_steps = task::answer_prediction_steps(tok_train);
     cross_entropy_steps_into(logits_train, tok_train, train_prediction_steps, ce_train);
     std::vector<float> grad_hidden_out(tok_train.size() * d_model, 0.0f);
-    std::vector<float> grad_lm_head(model->weights().lm_head.size(), 0.0f);
+    std::vector<float> grad_output_projection(model->weights().output_projection.size(), 0.0f);
     std::vector<float> grad_embed(model->weights().token_embedding.size(), 0.0f);
     const model::BlockForwardTape& tape0 = tapes[0];
 
@@ -389,21 +388,21 @@ int main(int argc, char** argv) {
         tok_train.size(), cfg.num_heads, cfg.num_kv_heads, cfg.head_dim, tape0.past_len, total_kv_len, true, true};
 
     kernel::backward_hidden(ce_train.probs.data(), ce_train.targets.data(), ce_train.steps.data(), ce_train.valid_steps,
-                            model->weights().lm_head.data(), tok_train.size(), d_model, k_vocab,
+                            model->weights().output_projection.data(), tok_train.size(), d_model, k_vocab,
                             grad_hidden_out.data());
 
     print_subsection("Individual Kernels");
     print_metric("kernel: grad final vocab projection",
                  mean_ns([&] {
-                     std::fill(grad_lm_head.begin(), grad_lm_head.end(), 0.0f);
-                     kernel::backward_lm_head(hidden_train.data(), ce_train.probs.data(), ce_train.targets.data(),
+                     std::fill(grad_output_projection.begin(), grad_output_projection.end(), 0.0f);
+                     kernel::backward_output_projection(hidden_train.data(), ce_train.probs.data(), ce_train.targets.data(),
                                               ce_train.steps.data(), ce_train.valid_steps, d_model, k_vocab,
-                                              grad_lm_head.data());
+                                              grad_output_projection.data());
                  }, warmup, iters));
     print_metric("kernel: grad hidden from logits",
                  mean_ns([&] {
                     kernel::backward_hidden(ce_train.probs.data(), ce_train.targets.data(), ce_train.steps.data(),
-                                            ce_train.valid_steps, model->weights().lm_head.data(), tok_train.size(),
+                                            ce_train.valid_steps, model->weights().output_projection.data(), tok_train.size(),
                                             d_model, k_vocab, grad_hidden_out.data());
                  }, warmup, iters));
     print_metric("kernel: grad token embedding",
@@ -435,7 +434,7 @@ int main(int argc, char** argv) {
                  }, warmup, iters));
     print_metric("kernel: attention backward",
                  mean_ns([&] {
-                     kernel::gqa_attention_prefill_backward(
+                     kernel::gqa_attention_backward(
                         tape0.q_rope.data(), tape0_k_all.data(), tape0_v_all.data(), nullptr, tape0.attn_probs.data(),
                          grad_attn_ctx.data(), grad_q_attn.data(), grad_k_attn.data(), grad_v_attn.data(), attn_bwd_params);
                  }, warmup, iters));
@@ -456,13 +455,13 @@ int main(int argc, char** argv) {
         const auto t1 = steady_clock::now();
 
         pipeline_ws.hidden_states.resize(tok_train.size() * d_model);
-        model->forward_for_training(tok_train, pipeline_ws.tapes, pipeline_ws.hidden_states.data());
+        model->forward_train(tok_train, pipeline_ws.tapes, pipeline_ws.hidden_states.data());
         const auto t2 = steady_clock::now();
 
         project_logits_steps_into(pipeline_ws.hidden_states.data(), tok_train.size(), d_model,
                                   std::span<const size_t>(train_prediction_steps.data(),
                                                           train_prediction_steps.size()),
-                                  model->weights().lm_head, k_vocab,
+                                  model->weights().output_projection, k_vocab,
                                   pipeline_ws.logits, pipeline_ws.gathered_hidden);
         const auto t3 = steady_clock::now();
 
@@ -471,14 +470,14 @@ int main(int argc, char** argv) {
         const auto t4 = steady_clock::now();
 
         const engine::CrossEntropyResult& ce = pipeline_ws.cross_entropy;
-        kernel::backward_lm_head(pipeline_ws.hidden_states.data(), ce.probs.data(), ce.targets.data(),
+        kernel::backward_output_projection(pipeline_ws.hidden_states.data(), ce.probs.data(), ce.targets.data(),
                                  ce.steps.data(), ce.valid_steps, d_model, k_vocab,
-                                 pipeline_ws.grad.lm_head.data());
+                                 pipeline_ws.grad.output_projection.data());
         const auto t5 = steady_clock::now();
 
         pipeline_ws.grad_hidden_out.resize(tok_train.size() * d_model);
         kernel::backward_hidden(ce.probs.data(), ce.targets.data(), ce.steps.data(), ce.valid_steps,
-                                model->weights().lm_head.data(), tok_train.size(), d_model, k_vocab,
+                                model->weights().output_projection.data(), tok_train.size(), d_model, k_vocab,
                                 pipeline_ws.grad_hidden_out.data());
         const auto t6 = steady_clock::now();
 

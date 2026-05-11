@@ -8,9 +8,9 @@ namespace {
 
 using namespace engine;
 
-TEST(DecodeTest, SoftmaxStableIsNormalized) {
+TEST(DecodeTest, SoftmaxIsNormalized) {
     std::vector<float> x = {1.0f, 2.0f, 3.0f};
-    softmax_stable_inplace(x);
+    softmax_inplace(x);
     float s = 0.0f;
     for (float v : x) {
         s += v;

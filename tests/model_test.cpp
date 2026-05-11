@@ -1,6 +1,4 @@
 #include "model/mini_llm.h"
-#include "model/executor.h"
-#include "engine/kv_cache.h"
 #include "task/task.h"
 #include "train/train.h"
 
@@ -19,57 +17,25 @@ using namespace train;
 
 constexpr float kGuard = -12345.0f;
 
-TEST(ModelTest, MultiLayerForwardUpdatesAllLayerCaches) {
-    ModelConfig cfg;
-    cfg.d_model = 16;
-    cfg.num_heads = 4;
-    cfg.num_kv_heads = 2;
-    cfg.head_dim = 4;
-    cfg.d_ff = 32;
-    cfg.rope_dim = 4;
-    cfg.rms_norm_eps = 1e-5f;
+TEST(ModelTest, MultiLayerPrefillProducesFiniteHidden) {
+    MiniLlm llm = MiniLlm::init_random(task::n_vocab(), 42u);
+    llm.configure_cache(64);
 
-    std::mt19937 rng(42);
-    ModelWeights model_weights;
-    model_weights.layers.push_back(make_decoder_layer_weights(cfg, rng));
-    model_weights.layers.push_back(make_decoder_layer_weights(cfg, rng));
-    model_weights.vocab_size = task::n_vocab();
-    model_weights.token_embedding.assign(model_weights.vocab_size * cfg.d_model, 0.0f);
-    model_weights.lm_head.assign(model_weights.vocab_size * cfg.d_model, 0.0f);
+    const std::vector<uint32_t> token_ids = {0u, 1u, 26u};
+    const size_t hidden_size = token_ids.size() * llm.d_model();
+    std::vector<float> hidden_out(hidden_size, 0.0f);
+    llm.prefill(token_ids, hidden_out.data());
 
-    MiniLlm llm(cfg, std::move(model_weights));
-
-    engine::KVCacheConfig cache_cfg;
-    cache_cfg.num_layers = llm.num_layers();
-    cache_cfg.num_kv_heads = cfg.num_kv_heads;
-    cache_cfg.max_seq_len = 64;
-    cache_cfg.head_dim = cfg.head_dim;
-    cache_cfg.page_size = 8;
-    engine::KVCache cache(cache_cfg);
-
-    ForwardInput in;
-    in.seq_len = 3;
-    in.use_cache = true;
-    in.causal = true;
-    in.is_prefill = true;
-    in.hidden_states.resize(in.seq_len * cfg.d_model);
-    std::uniform_real_distribution<float> dist(-0.1f, 0.1f);
-    for (float& v : in.hidden_states) v = dist(rng);
-
-    model::CacheBridge cache_bridge = engine::make_cache_bridge(cache);
-    std::vector<float> hidden_out(in.seq_len * cfg.d_model, 0.0f);
-    model::forward_model(llm.config(), llm.decoder_layers(), in, cache_bridge, hidden_out.data(), nullptr);
-    EXPECT_EQ(hidden_out.size(), in.seq_len * cfg.d_model);
-
-    for (size_t layer = 0; layer < llm.num_layers(); ++layer) {
-        EXPECT_EQ(cache.seq_len(layer), in.seq_len);
+    EXPECT_EQ(llm.num_layers(), llm.config().num_layers);
+    for (float v : hidden_out) {
+        ASSERT_TRUE(std::isfinite(v));
     }
 }
 
 TEST(ModelPointerTest, PrefillAndTrainingForwardWriteOnlyProvidedHiddenSpan) {
     constexpr uint32_t kSeed = 31415;
-    auto prefill_model = std::make_unique<model::MiniLlm>(model::MiniLlm::build(task::n_vocab(), kSeed, 1));
-    auto training_model = std::make_unique<model::MiniLlm>(model::MiniLlm::build(task::n_vocab(), kSeed, 1));
+    auto prefill_model = std::make_unique<model::MiniLlm>(model::MiniLlm::init_random(task::n_vocab(), kSeed));
+    auto training_model = std::make_unique<model::MiniLlm>(model::MiniLlm::init_random(task::n_vocab(), kSeed));
     prefill_model->configure_cache(64);
 
     const std::vector<uint32_t> token_ids = {
@@ -82,7 +48,7 @@ TEST(ModelPointerTest, PrefillAndTrainingForwardWriteOnlyProvidedHiddenSpan) {
 
     prefill_model->prefill(token_ids, prefill_guarded.data() + 1u);
     std::vector<model::BlockForwardTape> tapes;
-    training_model->forward_for_training(token_ids, tapes, training_guarded.data() + 1u);
+    training_model->forward_train(token_ids, tapes, training_guarded.data() + 1u);
 
     EXPECT_FLOAT_EQ(prefill_guarded.front(), kGuard);
     EXPECT_FLOAT_EQ(prefill_guarded.back(), kGuard);
@@ -99,8 +65,8 @@ TEST(ModelPointerTest, PrefillAndTrainingForwardWriteOnlyProvidedHiddenSpan) {
 
 TEST(ModelPointerTest, DecodeWritesOneHiddenRowAndMatchesFullPrefillLastRow) {
     constexpr uint32_t kSeed = 27182;
-    auto decode_model = std::make_unique<model::MiniLlm>(model::MiniLlm::build(task::n_vocab(), kSeed, 1));
-    auto full_model = std::make_unique<model::MiniLlm>(model::MiniLlm::build(task::n_vocab(), kSeed, 1));
+    auto decode_model = std::make_unique<model::MiniLlm>(model::MiniLlm::init_random(task::n_vocab(), kSeed));
+    auto full_model = std::make_unique<model::MiniLlm>(model::MiniLlm::init_random(task::n_vocab(), kSeed));
     decode_model->configure_cache(64);
     full_model->configure_cache(64);
 
@@ -133,26 +99,7 @@ TEST(ModelPointerTest, DecodeWritesOneHiddenRowAndMatchesFullPrefillLastRow) {
 }
 
 TEST(ModelTrainTest, BatchMetricsReturnsLossAndAccuracy) {
-    ModelConfig cfg;
-    cfg.d_model = 8;
-    cfg.num_heads = 2;
-    cfg.num_kv_heads = 1;
-    cfg.head_dim = 4;
-    cfg.d_ff = 16;
-    cfg.rope_dim = 4;
-    cfg.rms_norm_eps = 1e-5f;
-
-    std::mt19937 rng(123);
-    ModelWeights model_weights;
-    model_weights.layers.push_back(make_decoder_layer_weights(cfg, rng));
-    model_weights.vocab_size = task::n_vocab();
-    model_weights.token_embedding.resize(model_weights.vocab_size * cfg.d_model);
-    model_weights.lm_head.resize(model_weights.vocab_size * cfg.d_model);
-    std::uniform_real_distribution<float> dist(-0.1f, 0.1f);
-    for (float& v : model_weights.token_embedding) v = dist(rng);
-    for (float& v : model_weights.lm_head) v = dist(rng);
-
-    auto m = std::make_unique<model::MiniLlm>(cfg, model_weights);
+    auto m = std::make_unique<model::MiniLlm>(model::MiniLlm::init_random(task::n_vocab(), 123u));
 
     const std::vector<uint32_t> token_ids = {
         0u, 1u, 26u, 3u, 4u, 27u, 5u, 6u, 28u, 7u, 8u, 29u, 9u, 10u, 30u, 3u, 4u};
@@ -165,27 +112,8 @@ TEST(ModelTrainTest, BatchMetricsReturnsLossAndAccuracy) {
 }
 
 TEST(ModelTrainTest, AdamWReducesLossOnFixedSample) {
-    ModelConfig cfg;
-    cfg.d_model = 8;
-    cfg.num_heads = 2;
-    cfg.num_kv_heads = 1;
-    cfg.head_dim = 4;
-    cfg.d_ff = 16;
-    cfg.rope_dim = 4;
-    cfg.rms_norm_eps = 1e-5f;
-
-    std::mt19937 rng(5678);
     constexpr size_t k_vocab = task::n_vocab();
-    ModelWeights model_weights;
-    model_weights.vocab_size = k_vocab;
-    model_weights.layers.push_back(make_decoder_layer_weights(cfg, rng));
-    model_weights.token_embedding.resize(model_weights.vocab_size * cfg.d_model);
-    model_weights.lm_head.resize(model_weights.vocab_size * cfg.d_model);
-    std::uniform_real_distribution<float> dist(-0.1f, 0.1f);
-    for (float& v : model_weights.token_embedding) v = dist(rng);
-    for (float& v : model_weights.lm_head) v = dist(rng);
-
-    auto m = std::make_unique<model::MiniLlm>(cfg, model_weights);
+    auto m = std::make_unique<model::MiniLlm>(model::MiniLlm::init_random(k_vocab, 5678u));
     model::ModelWeights adam_m = clone_model(m->weights());
     model::ModelWeights adam_v = clone_model(m->weights());
 

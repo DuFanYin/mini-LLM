@@ -18,7 +18,7 @@ uint32_t last_argmax(model::MiniLlm& m, const std::vector<uint32_t>& prompt) {
     const size_t last = prompt.size() - 1;
     std::vector<float> row(d_model);
     std::memcpy(row.data(), hidden.data() + last * d_model, d_model * sizeof(float));
-    return engine::argmax_from_hidden(std::span<const float>(row.data(), row.size()), weights.lm_head, vocab_size,
+    return engine::argmax_from_hidden(std::span<const float>(row.data(), row.size()), weights.output_projection, vocab_size,
                                       d_model);
 }
 
@@ -40,7 +40,7 @@ bool is_answer_allowed(model::MiniLlm& m, const std::vector<uint32_t>& token_ids
     std::vector<float> gathered;
     engine::LogitsOutput logits;
     engine::project_logits_steps_into(hidden_out.data(), token_ids.size(), d_model,
-                                      std::span<const size_t>(pred_steps.data(), pred_steps.size()), weights.lm_head,
+                                      std::span<const size_t>(pred_steps.data(), pred_steps.size()), weights.output_projection,
                                       weights.vocab_size, logits, gathered);
 
     const size_t vocab_size = weights.vocab_size;
@@ -103,7 +103,7 @@ std::pair<size_t, size_t> count_probe_hits(model::MiniLlm& m, size_t trials, uin
             std::vector<float> row(m.d_model(), 0.0f);
             m.decode(token, row.data());
             token = engine::argmax_from_hidden(std::span<const float>(row.data(), row.size()),
-                                               m.weights().lm_head, m.weights().vocab_size, m.d_model());
+                                               m.weights().output_projection, m.weights().vocab_size, m.d_model());
             if (token != gold[i]) {
                 exact = false;
             }

@@ -170,7 +170,7 @@ int main(int argc, char** argv) {
         rng.seed(rd());
     }
 
-    std::unique_ptr<model::MiniLlm> model = model::load_mini_llm(model_path, 256);
+    std::unique_ptr<model::MiniLlm> model = model::MiniLlm::init_load(model_path, 256);
 
     if (model->weights().vocab_size < task::n_vocab()) {
         std::println("error: model vocab_size={} is smaller than task vocab ({})",
@@ -217,7 +217,7 @@ int main(int argc, char** argv) {
         std::vector<uint32_t> pred_span;
         pred_span.reserve(gold_span.size());
         const float* last_row = prompt_hidden.data() + (prompt.size() - 1u) * d_model;
-        uint32_t token = engine::sample_from_hidden_row(std::span<const float>(last_row, d_model), weights.lm_head,
+        uint32_t token = engine::sample_from_hidden_row(std::span<const float>(last_row, d_model), weights.output_projection,
                                                         vocab_size, d_model, temperature, rng);
         pred_span.push_back(token);
 
@@ -225,7 +225,7 @@ int main(int argc, char** argv) {
         std::vector<float> decode_row(d_model, 0.0f);
         for (size_t i = 1; i < gold_span.size(); ++i) {
             model->decode(token, decode_row.data());
-            token = engine::sample_from_hidden_row(std::span<const float>(decode_row.data(), d_model), weights.lm_head,
+            token = engine::sample_from_hidden_row(std::span<const float>(decode_row.data(), d_model), weights.output_projection,
                                                    vocab_size, d_model, temperature, rng);
             pred_span.push_back(token);
         }

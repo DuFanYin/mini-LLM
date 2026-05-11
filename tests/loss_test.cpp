@@ -20,14 +20,14 @@ TEST(LossTest, ProjectLogitsComputesRowWiseDotProducts) {
     // row1 = [3, 4]
     std::vector<float> hidden = {1.0f, 2.0f, 3.0f, 4.0f};
 
-    // lm_head rows:
+    // output_projection rows:
     // v0 = [1, 0]
     // v1 = [0, 1]
     // v2 = [1, 1]
-    std::vector<float> lm_head = {1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f};
+    std::vector<float> output_projection = {1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f};
 
     LogitsOutput logits;
-    project_logits_into(hidden, seq_len, d_model, lm_head, vocab_size, logits);
+    project_logits_into(hidden, seq_len, d_model, output_projection, vocab_size, logits);
     ASSERT_EQ(logits.logits.size(), seq_len * vocab_size);
     EXPECT_FLOAT_EQ(logits.logits[0], 1.0f);
     EXPECT_FLOAT_EQ(logits.logits[1], 2.0f);
@@ -104,18 +104,18 @@ TEST(LossTest, ProjectLogitsStepsPackedMatchesDenseForSameSteps) {
     const size_t d_model = 2;
     const size_t vocab_size = 3;
     const std::vector<float> hidden = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f};
-    const std::vector<float> lm_head = {1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f};
+    const std::vector<float> output_projection = {1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f};
     const std::vector<uint32_t> token_ids = {0, 1, 2, 0};
     const std::vector<size_t> steps = {0u, 2u};
 
     LogitsOutput dense;
-    project_logits_into(hidden, seq_len, d_model, lm_head, vocab_size, dense);
+    project_logits_into(hidden, seq_len, d_model, output_projection, vocab_size, dense);
     ASSERT_FALSE(dense.packed_prediction_rows);
 
     std::vector<float> gathered;
     LogitsOutput packed;
     project_logits_steps_into(hidden.data(), seq_len, d_model, std::span<const size_t>(steps.data(), steps.size()),
-                              lm_head, vocab_size, packed, gathered);
+                              output_projection, vocab_size, packed, gathered);
     ASSERT_TRUE(packed.packed_prediction_rows);
     ASSERT_EQ(packed.logits.size(), steps.size() * vocab_size);
     for (size_t i = 0; i < steps.size(); ++i) {

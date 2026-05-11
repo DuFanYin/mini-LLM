@@ -21,7 +21,7 @@ void add(const float* a, const float* b, float* y, const AddParams& p) {
     }
 }
 
-void softmax_stable(const float* logits, float* probs, const SoftmaxParams& p) {
+void softmax(const float* logits, float* probs, const SoftmaxParams& p) {
     float max_logit = -std::numeric_limits<float>::infinity();
     for (size_t i = 0; i < p.n; ++i) {
         if (logits[i] > max_logit) {

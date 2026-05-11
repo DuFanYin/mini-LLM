@@ -26,7 +26,7 @@ void add(const float* a, const float* b, float* y, const AddParams& p) {
     vDSP_vadd(a, 1, b, 1, y, 1, p.size);
 }
 
-void softmax_stable(const float* logits, float* probs, const SoftmaxParams& p) {
+void softmax(const float* logits, float* probs, const SoftmaxParams& p) {
     if (p.n == 0) {
         return;
     }

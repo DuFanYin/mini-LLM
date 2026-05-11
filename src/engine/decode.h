@@ -31,19 +31,19 @@ void cross_entropy_next_token_into(const LogitsOutput& logits, const std::vector
 void cross_entropy_steps_into(const LogitsOutput& logits, const std::vector<uint32_t>& target_ids,
                               const std::vector<size_t>& prediction_steps, CrossEntropyResult& out);
 void project_logits_into(const std::vector<float>& hidden_states, size_t seq_len, size_t d_model,
-                         const std::vector<float>& lm_head, size_t vocab_size, LogitsOutput& out);
+                         const std::vector<float>& output_projection, size_t vocab_size, LogitsOutput& out);
 void project_logits_steps_into(const float* hidden_states, size_t seq_len, size_t d_model,
-                               std::span<const size_t> prediction_steps, const std::vector<float>& lm_head,
+                               std::span<const size_t> prediction_steps, const std::vector<float>& output_projection,
                                size_t vocab_size, LogitsOutput& out, std::vector<float>& gathered_workspace);
-void logits_from_hidden_row(std::span<const float> hidden_row, const std::vector<float>& lm_head, size_t vocab_size,
+void logits_from_hidden_row(std::span<const float> hidden_row, const std::vector<float>& output_projection, size_t vocab_size,
                             size_t d_model, std::vector<float>& logits_out);
 [[nodiscard]] uint32_t argmax_from_logits(const std::vector<float>& logits);
-[[nodiscard]] uint32_t argmax_from_hidden(std::span<const float> hidden_row, const std::vector<float>& lm_head,
+[[nodiscard]] uint32_t argmax_from_hidden(std::span<const float> hidden_row, const std::vector<float>& output_projection,
                                           size_t vocab_size, size_t d_model);
-void softmax_stable_inplace(std::vector<float>& logits);
+void softmax_inplace(std::vector<float>& logits);
 [[nodiscard]] uint32_t sample_from_logits(std::vector<float>& logits, float temperature, std::mt19937& rng,
                                           float temperature_argmax_eps = 1e-6f);
-[[nodiscard]] uint32_t sample_from_hidden_row(std::span<const float> hidden_row, const std::vector<float>& lm_head,
+[[nodiscard]] uint32_t sample_from_hidden_row(std::span<const float> hidden_row, const std::vector<float>& output_projection,
                                               size_t vocab_size, size_t d_model, float temperature, std::mt19937& rng);
 
 } // namespace engine

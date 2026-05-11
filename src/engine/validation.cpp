@@ -21,13 +21,16 @@ void validate_model_weights(const model::ModelConfig& cfg, const model::ModelWei
     if (weights.layers.empty()) {
         throw std::invalid_argument("Model: at least one layer is required");
     }
+    if (cfg.num_layers != 0 && cfg.num_layers != weights.layers.size()) {
+        throw std::invalid_argument("ModelConfig: num_layers must match weights.layers.size()");
+    }
     if (weights.vocab_size > 0) {
         const size_t expected = weights.vocab_size * cfg.d_model;
         if (weights.token_embedding.size() != expected) {
             throw std::invalid_argument("Model: token_embedding size mismatch");
         }
-        if (weights.lm_head.size() != expected) {
-            throw std::invalid_argument("Model: lm_head size mismatch");
+        if (weights.output_projection.size() != expected) {
+            throw std::invalid_argument("Model: output_projection size mismatch");
         }
     }
 }

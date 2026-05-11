@@ -40,7 +40,7 @@ model::ModelWeights clone_model(const model::ModelWeights& ref) {
         g.layers.push_back(clone_decoder_layer_weights(layer));
     }
     g.token_embedding.assign(ref.token_embedding.size(), 0.0f);
-    g.lm_head.assign(ref.lm_head.size(), 0.0f);
+    g.output_projection.assign(ref.output_projection.size(), 0.0f);
     return g;
 }
 
@@ -68,7 +68,7 @@ void clear(model::ModelWeights& g) {
         clear(layer);
     }
     std::fill(g.token_embedding.begin(), g.token_embedding.end(), 0.0f);
-    std::fill(g.lm_head.begin(), g.lm_head.end(), 0.0f);
+    std::fill(g.output_projection.begin(), g.output_projection.end(), 0.0f);
 }
 
 void vector_add_sq_sum(const std::vector<float>& v, double* acc) {
@@ -105,7 +105,7 @@ double grad_l2_sq(const model::ModelWeights& g) {
         }
     }
     vector_add_sq_sum(g.token_embedding, &s);
-    vector_add_sq_sum(g.lm_head, &s);
+    vector_add_sq_sum(g.output_projection, &s);
     return s;
 }
 
@@ -151,7 +151,7 @@ void clip_grad(model::ModelWeights& g, float max_norm) {
         }
     }
     vector_scale(g.token_embedding, scale);
-    vector_scale(g.lm_head, scale);
+    vector_scale(g.output_projection, scale);
 }
 
 void adamw_update_vec(std::vector<float>& param, const std::vector<float>& grad, std::vector<float>& m,
@@ -235,7 +235,7 @@ void adamw_update_model(model::ModelWeights& param, const model::ModelWeights& g
     }
     adamw_update_vec(param.token_embedding, grad.token_embedding, m.token_embedding, v.token_embedding, t, lr, beta1,
                      beta2, eps, weight_decay);
-    adamw_update_vec(param.lm_head, grad.lm_head, m.lm_head, v.lm_head, t, lr, beta1, beta2, eps, weight_decay);
+    adamw_update_vec(param.output_projection, grad.output_projection, m.output_projection, v.output_projection, t, lr, beta1, beta2, eps, weight_decay);
 }
 
 } // namespace train

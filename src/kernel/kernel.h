@@ -79,17 +79,16 @@ void gemm_nt(const float* A, const float* B, float* C, size_t M, size_t N, size_
 void linear(const float* x, const float* w, const float* bias, float* y, const LinearParams& p);
 void rms_norm(const float* x, const float* weight, float eps, float* y, const RmsNormParams& p);
 void silu_mul(const float* gate, const float* up, float* hidden, const SiluMulParams& p);
-void softmax_stable(const float* logits, float* probs, const SoftmaxParams& p);
+void softmax(const float* logits, float* probs, const SoftmaxParams& p);
 void apply_rope(float* x, const size_t* positions, RopeCache& cache, const RopeParams& p);
 
-void gqa_attention_prefill(const float* q, const float* k_all, const float* v_all, const float* attention_mask,
-                           float* ctx, float* attn_probs_out,
-                           const AttentionParams& p);
-void gqa_attention_decode(const float* q, const float* k_all, const float* v_all, const float* attention_mask, float* ctx,
-                          const AttentionParams& p);
-void gqa_attention_prefill_backward(const float* q, const float* k_all, const float* v_all, const float* attention_mask,
-                                    const float* attn_probs_cached, const float* grad_ctx, float* grad_q, float* grad_k_all,
-                                    float* grad_v_all, const AttentionParams& p);
+// Shared GQA forward: arbitrary seq_len >= 1; ctx is [seq_len * num_heads * head_dim].
+// Pass attn_probs_out when training tape needs softmax cache; nullptr for inference decode or prefill without tape.
+void gqa_attention_forward(const float* q, const float* k_all, const float* v_all, const float* attention_mask,
+                           float* ctx, float* attn_probs_out, const AttentionParams& p);
+void gqa_attention_backward(const float* q, const float* k_all, const float* v_all, const float* attention_mask,
+                            const float* attn_probs_cached, const float* grad_ctx, float* grad_q, float* grad_k_all,
+                            float* grad_v_all, const AttentionParams& p);
 
 void softmax_backward_row(const float* prob, const float* grad_prob, float* grad_logits, const SoftmaxParams& p);
 void silu_mul_backward(const float* gate, const float* up, const float* grad_hidden, float* grad_gate, float* grad_up,
@@ -101,10 +100,11 @@ void apply_rope_backward(const float* grad_out, float* grad_in, const size_t* po
 void rms_norm_backward(const float* x, const float* weight, float eps, const float* dy, float* dx, float* grad_weight,
                        const RmsNormParams& p);
 
-void backward_lm_head(const float* hidden_states, const float* probs, const uint32_t* targets, const size_t* steps,
-                      size_t valid_steps, size_t d_model, size_t vocab_size, float* grad_lm_head);
+void backward_output_projection(const float* hidden_states, const float* probs, const uint32_t* targets,
+                                const size_t* steps, size_t valid_steps, size_t d_model, size_t vocab_size,
+                                float* grad_output_projection);
 void backward_hidden(const float* probs, const uint32_t* targets, const size_t* steps, size_t valid_steps,
-                     const float* lm_head, size_t total_steps, size_t d_model, size_t vocab_size,
+                     const float* output_projection, size_t total_steps, size_t d_model, size_t vocab_size,
                      float* grad_hidden_out);
 void backward_embedding(const uint32_t* token_ids, size_t seq_len, const float* grad_hidden, size_t d_model,
                         float* grad_token_embed);
