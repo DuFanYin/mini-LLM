@@ -8,11 +8,12 @@ namespace model {
 
 // Model execution API: `forward_model` (full decoder stack) and `backward_model` (full stack adjoint).
 // Layer-level forward steps are file-local in `executor_forward.cpp`; backward stages in `executor_backward.cpp`.
+// `cache` may be null when `input.use_cache == false` (training / one-shot prefill without caching).
 
 void forward_model(const ModelConfig& config, const std::vector<DecoderLayerWeights*>& layer_weights,
                    std::vector<kernel::RopeCache>& rope_q, std::vector<kernel::RopeCache>& rope_k,
                    const ForwardInput& input,
-                   CacheBridge& cache, float* hidden_out, std::vector<BlockForwardTape>* layer_tapes);
+                   KVCache* cache, float* hidden_out, std::vector<BlockForwardTape>* layer_tapes);
 
 void backward_model(const ModelConfig& config, const ModelWeights& weights,
                     const std::vector<BlockForwardTape>& tapes, const std::vector<float>& grad_hidden_out,

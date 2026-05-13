@@ -1,5 +1,5 @@
 #include "kernel/kernel.h"
-#include "engine/kv_cache.h"
+#include "model/kv_cache.h"
 
 #include <gtest/gtest.h>
 
@@ -162,16 +162,20 @@ TEST(RopeTest, PositionChangesRotation) {
 }
 
 TEST(KVCacheTest, AppendPreservesOrderAcrossPages) {
-    engine::KVCacheConfig cfg;
+    model::KVCacheConfig cfg;
     cfg.num_layers = 1;
     cfg.num_kv_heads = 1;
     cfg.max_seq_len = 8;
     cfg.head_dim = 2;
     cfg.page_size = 2;
-    engine::KVCache cache(cfg);
+    model::KVCache cache(cfg);
 
-    cache.append(0, std::vector<float>{1, 2}, std::vector<float>{11, 12}, 1);
-    cache.append(0, std::vector<float>{3, 4, 5, 6}, std::vector<float>{13, 14, 15, 16}, 2);
+    const std::vector<float> k0 = {1, 2};
+    const std::vector<float> v0 = {11, 12};
+    const std::vector<float> k1 = {3, 4, 5, 6};
+    const std::vector<float> v1 = {13, 14, 15, 16};
+    cache.append(0, k0.data(), v0.data(), 1);
+    cache.append(0, k1.data(), v1.data(), 2);
 
     EXPECT_EQ(cache.seq_len(0), 3u);
     EXPECT_NEAR(cache.k_at(0, 0, 0, 0), 1.0f, 1e-6f);
@@ -182,14 +186,14 @@ TEST(KVCacheTest, AppendPreservesOrderAcrossPages) {
     EXPECT_NEAR(cache.k_at(0, 0, 2, 1), 6.0f, 1e-6f);
 }
 
-TEST(KVCacheTest, AppendRawPreservesOrderAcrossPages) {
-    engine::KVCacheConfig cfg;
+TEST(KVCacheTest, AppendPreservesHeadMajorOrderAcrossPages) {
+    model::KVCacheConfig cfg;
     cfg.num_layers = 1;
     cfg.num_kv_heads = 2;
     cfg.max_seq_len = 4;
     cfg.head_dim = 2;
     cfg.page_size = 2;
-    engine::KVCache cache(cfg);
+    model::KVCache cache(cfg);
 
     const std::vector<float> k = {
         1.0f, 2.0f, 3.0f, 4.0f,
@@ -202,7 +206,7 @@ TEST(KVCacheTest, AppendRawPreservesOrderAcrossPages) {
         109.0f, 110.0f, 111.0f, 112.0f,
     };
 
-    cache.append_raw(0, k.data(), v.data(), 3);
+    cache.append(0, k.data(), v.data(), 3);
 
     EXPECT_EQ(cache.seq_len(0), 3u);
     EXPECT_NEAR(cache.k_at(0, 0, 0, 0), 1.0f, 1e-6f);

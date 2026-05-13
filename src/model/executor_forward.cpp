@@ -1,7 +1,6 @@
 #include "model/executor.h"
 
-#include "engine/kv_cache.h"
-#include "engine/validation.h"
+#include "model/kv_cache.h"
 
 #include <cstddef>
 #include <utility>
@@ -13,14 +12,15 @@ namespace {
 // Attention submodule: pre-norm -> QKV -> RoPE -> KV -> GQA -> o_proj -> residual with input. Writes post-attention
 // hidden (before second norm / MLP) to `hidden_after_attn_out`. On the inference path (tape == nullptr) intermediate
 // tensors are held in function-local vectors; on the training path they are stored in `tape` for backward.
+// `cache` may be null when `input.use_cache == false`.
 void forward_attention_block(const ModelConfig& config, const DecoderLayerWeights& weights, const ForwardInput& input,
-                             const CacheView& cache_view, const CacheBridge& cache, kernel::RopeCache& rope_q,
-                             kernel::RopeCache& rope_k, float* hidden_after_attn_out, BlockForwardTape* tape) {
+                             KVCache* cache, kernel::RopeCache& rope_q, kernel::RopeCache& rope_k,
+                             float* hidden_after_attn_out, BlockForwardTape* tape) {
     const size_t seq_len = input.seq_len;
     const size_t q_proj_dim = config.num_heads * config.head_dim;
     const size_t kv_proj_dim = config.num_kv_heads * config.head_dim;
-    const size_t past_len = (input.past_len == static_cast<size_t>(-1)) ? cache_view.past_len : input.past_len;
-    engine::validate_past_len_cache(input.use_cache, past_len, cache_view.past_len);
+    const size_t cache_past = (input.use_cache && cache != nullptr) ? cache->seq_len(input.layer_id) : 0;
+    const size_t past_len = (input.past_len == static_cast<size_t>(-1)) ? cache_past : input.past_len;
 
     std::vector<size_t> positions_local;
     const size_t* positions_ptr = nullptr;
@@ -31,7 +31,6 @@ void forward_attention_block(const ModelConfig& config, const DecoderLayerWeight
         }
         positions_ptr = positions_local.data();
     } else {
-        engine::validate_positions_size(seq_len, input.positions);
         positions_ptr = input.positions.data();
     }
 
@@ -94,8 +93,8 @@ void forward_attention_block(const ModelConfig& config, const DecoderLayerWeight
     std::vector<float> k_head_major_local;
     std::vector<float> v_head_major_local;
     if (input.use_cache) {
-        engine::append_cache(cache, input.layer_id, k_rope.data(), v_proj.data(), seq_len);
-        const CacheView updated_cache_view = engine::build_cache_view(cache, input.layer_id);
+        cache->append(input.layer_id, k_rope.data(), v_proj.data(), seq_len);
+        const CacheView updated_cache_view = cache->view(input.layer_id);
         total_kv_len = updated_cache_view.total_kv_len;
         kv_stride = updated_cache_view.kv_stride;
         k_all_ptr = updated_cache_view.k_cache;
@@ -126,7 +125,6 @@ void forward_attention_block(const ModelConfig& config, const DecoderLayerWeight
         k_all_ptr = k_head_major.data();
         v_all_ptr = v_head_major.data();
     }
-    engine::validate_attention_mask_size(seq_len, total_kv_len, input.attention_mask);
 
     if (tape != nullptr) {
         if (input.use_cache) {
@@ -188,15 +186,15 @@ void forward_attention_block(const ModelConfig& config, const DecoderLayerWeight
 
 // Full decoder layer: attention block (above) then post-norm + SiLU MLP + residual.
 void forward_decoder_layer(const ModelConfig& config, const DecoderLayerWeights& weights, const ForwardInput& input,
-                           const CacheView& cache_view, const CacheBridge& cache, kernel::RopeCache& rope_q,
-                           kernel::RopeCache& rope_k, float* hidden_out, BlockForwardTape* tape) {
+                           KVCache* cache, kernel::RopeCache& rope_q, kernel::RopeCache& rope_k, float* hidden_out,
+                           BlockForwardTape* tape) {
     const size_t seq_len = input.seq_len;
     const kernel::RmsNormParams norm_params{seq_len, config.d_model};
     std::vector<float> hidden_after_attn_local;
     std::vector<float>& hidden_after_attn = (tape != nullptr) ? tape->hidden_after_attn : hidden_after_attn_local;
     hidden_after_attn.resize(seq_len * config.d_model);
     float* hidden_after_attn_data = hidden_after_attn.data();
-    forward_attention_block(config, weights, input, cache_view, cache, rope_q, rope_k, hidden_after_attn_data, tape);
+    forward_attention_block(config, weights, input, cache, rope_q, rope_k, hidden_after_attn_data, tape);
 
     std::vector<float> normalized_post_attention_local;
     std::vector<float>& normalized_post_attention =
@@ -247,7 +245,7 @@ void forward_decoder_layer(const ModelConfig& config, const DecoderLayerWeights&
 void forward_model(const ModelConfig& config, const std::vector<DecoderLayerWeights*>& layer_weights,
                    std::vector<kernel::RopeCache>& rope_q, std::vector<kernel::RopeCache>& rope_k,
                    const ForwardInput& input,
-                   CacheBridge& cache, float* hidden_out, std::vector<BlockForwardTape>* layer_tapes) {
+                   KVCache* cache, float* hidden_out, std::vector<BlockForwardTape>* layer_tapes) {
     std::vector<float> layer_hidden_a(input.seq_len * config.d_model, 0.0f);
     std::vector<float> layer_hidden_b(input.seq_len * config.d_model, 0.0f);
     const float* current_hidden =
@@ -268,20 +266,13 @@ void forward_model(const ModelConfig& config, const std::vector<DecoderLayerWeig
         layer_in.is_decode = input.is_decode;
         layer_in.hidden_states_ptr = current_hidden;
 
-        CacheView cache_view;
-        if (layer_in.use_cache) {
-            cache_view = engine::build_cache_view(cache, layer_in.layer_id);
-        } else {
-            cache_view.layer_id = layer_in.layer_id;
-        }
-
         float* layer_out = hidden_out;
         if (!is_last_layer) {
             layer_out = use_a ? layer_hidden_a.data() : layer_hidden_b.data();
         }
         BlockForwardTape* tape = (layer_tapes != nullptr) ? &(*layer_tapes)[layer_id] : nullptr;
-        forward_decoder_layer(config, *layer_weights[layer_id], layer_in, cache_view, cache, rope_q[layer_id],
-                              rope_k[layer_id], layer_out, tape);
+        forward_decoder_layer(config, *layer_weights[layer_id], layer_in, cache, rope_q[layer_id], rope_k[layer_id],
+                              layer_out, tape);
 
         if (!is_last_layer) {
             current_hidden = layer_out;

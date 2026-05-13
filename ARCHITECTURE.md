@@ -52,7 +52,7 @@ Layer roles:
 - `task` owns Which-Span data generation, parsing, prediction positions, and evaluation.
 - `train` owns one-step training, reusable training buffers, gradient utilities, and AdamW.
 - `model` owns `MiniLlm`, model weights/config, two-step random init (`MiniLlm::build` then `init_random`), optional `init_load`, one-shot `load_mini_llm`, per-layer runtime state, forward/backward execution, and cache use.
-- `engine` owns runtime utilities shared by callers: KV cache, validation, trained-model I/O, decode helpers, embedding helpers.
+- `engine` owns runtime utilities shared by callers: trained-model I/O, decode helpers, embedding helpers. (KV cache lives in the `model` layer alongside the executor.)
 - `kernel` owns shape-based math functions. It has no model/task/train object dependency.
 
 Allowed dependencies:
@@ -71,7 +71,7 @@ Allowed dependencies:
 - `ModelConfig config_`
 - `ModelWeights weights_`
 - `std::vector<DecoderLayerState> layers_`
-- optional `std::unique_ptr<engine::KVCache> cache_`
+- optional `std::unique_ptr<model::KVCache> cache_`
 
 `ModelWeights` contains token embeddings, decoder-layer weights, and output projection weights (`output_projection`). `DecoderLayerState` stores per-layer weight pointers plus RoPE cache state used by execution.
 
@@ -89,7 +89,7 @@ Public runtime methods:
 - `backward(tapes, grad_hidden_out, grad, grad_hidden_in)` runs decoder-stack backward.
 - `configure_cache(max_seq_len)` preallocates inference cache storage.
 
-Executor-only types such as `ForwardInput`, `CacheBridge`, `CacheView`, `BlockForwardTape`, and `ModelForwardTape` stay inside the model layer. Apps, task code, and train code should call `MiniLlm` methods instead of constructing executor inputs directly.
+Executor-only types such as `ForwardInput`, `BlockForwardTape`, and `ModelForwardTape` stay inside the model layer. KV-cache types (`KVCache`, `KVCacheConfig`, `CacheView`) live next to the cache implementation in `model/kv_cache.h`. Apps, task code, and train code should call `MiniLlm` methods instead of constructing executor inputs or touching the cache directly.
 
 ## Forward Execution
 
@@ -148,8 +148,6 @@ Within each decoder layer, backward order is:
 
 The engine layer provides shared utilities that are not owned by the model object:
 
-- KV cache storage and typed cache views.
-- Validation of config, weights, and forward inputs.
 - Trained-model save/load.
 - Logit projection helpers.
 - Packed prediction-step projection helpers.
@@ -272,7 +270,7 @@ Benchmark app:
 Keep these boundaries intact:
 
 - Apps should not call executor functions directly.
-- Task code should not construct `ForwardInput`, `CacheBridge`, or `CacheView`.
+- Task code should not construct `ForwardInput`, `KVCache`, or `CacheView`.
 - Kernel code should not include model, train, or task object headers.
 - Saved model reads/writes should go through the engine/model I/O path.
 - Do not add a generic model interface while `MiniLlm` is the only model family.
@@ -291,7 +289,6 @@ Namespaces are fixed to `engine`, `model`, `kernel`, `train`, and `task`.
 
 Use these naming patterns:
 
-- validators: `validate_*`
 - value construction helpers: `make_*`
 - loading helpers: `load_*`
 - metrics returning values: `compute_*`

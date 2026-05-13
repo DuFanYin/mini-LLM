@@ -31,8 +31,7 @@ add_library(model STATIC
   src/model/mini_llm.cpp
   src/model/executor_forward.cpp
   src/model/executor_backward.cpp
-  src/engine/validation.cpp
-  src/engine/kv_cache.cpp
+  src/model/kv_cache.cpp
   src/engine/io.cpp
   ${MINI_LLM_CORE_SRC}
   ${MINI_LLM_GEMM_DRIVER_SRC}

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "engine/kv_cache.h"
 #include "kernel/kernel.h"
+#include "model/kv_cache.h"
 #include "model/model_types.h"
 
 #include <cstddef>
@@ -47,7 +47,7 @@ private:
     std::vector<DecoderLayerWeights*> layer_weights_;
     mutable std::vector<kernel::RopeCache> rope_q_;
     mutable std::vector<kernel::RopeCache> rope_k_;
-    std::unique_ptr<engine::KVCache> cache_;
+    std::unique_ptr<KVCache> cache_;
     size_t cache_page_size_ = 16;
 };
 

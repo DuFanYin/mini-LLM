@@ -5,6 +5,7 @@ A from-scratch decoder-only language model in C++23. No deep-learning framework 
 The repo trains a 4-layer GQA transformer (~2.4M params) on a synthetic **Which-Span** retrieval task and ships interactive `inference`, batch `train`, micro-`benchmark`, and a `tests_runner`.
 
 For layout, dependency rules, and per-component design notes, see `ARCHITECTURE.md`.
+For Chinese learning notes based on this project, see `docs/README.md`.
 
 ## What's in the box
 

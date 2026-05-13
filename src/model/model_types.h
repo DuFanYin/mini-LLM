@@ -1,7 +1,8 @@
 #pragma once
 
-// Shared structs for config, weights, I/O, autograd tape, and cache handles — no execution logic.
+// Shared structs for config, weights, I/O, and autograd tape — no execution logic.
 // Decoder layer weight layout (on-disk save order): norm1 | Q,K,V,o_proj | norm2 | MLP gate,up,down.
+// KV-cache types (KVCache, CacheView, KVCacheConfig) live in model/kv_cache.h.
 
 #include <cstddef>
 #include <cstdint>
@@ -102,22 +103,6 @@ struct BlockForwardTape {
     std::vector<float> up;
     std::vector<float> hidden_mid;
     std::vector<float> mlp_out;
-};
-
-struct CacheBridge {
-    size_t num_layers = 0;
-    size_t num_kv_heads = 0;
-    size_t head_dim = 0;
-    void* opaque_cache = nullptr;
-};
-
-struct CacheView {
-    size_t layer_id = 0;
-    size_t past_len = 0;
-    size_t total_kv_len = 0;
-    size_t kv_stride = 0;
-    const float* k_cache = nullptr;
-    const float* v_cache = nullptr;
 };
 
 } // namespace model

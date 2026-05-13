@@ -1,4 +1,5 @@
-#include "engine/kv_cache.h"
+#include "model/kv_cache.h"
+#include "model/model_types.h"
 
 #include <algorithm>
 #include <cmath>
@@ -16,13 +17,13 @@ int main() {
     cfg.head_dim = 2;
     cfg.d_ff = 8;
 
-    engine::KVCacheConfig kcfg;
+    model::KVCacheConfig kcfg;
     kcfg.num_layers = 1;
     kcfg.num_kv_heads = 1;
     kcfg.max_seq_len = 16;
     kcfg.head_dim = 2;
     kcfg.page_size = 4;
-    engine::KVCache cache(kcfg);
+    model::KVCache cache(kcfg);
 
     ForwardInput in;
     in.seq_len = 2;

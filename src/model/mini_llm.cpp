@@ -2,7 +2,6 @@
 
 #include "engine/embedding.h"
 #include "engine/io.h"
-#include "engine/validation.h"
 #include "model/executor.h"
 
 #include <algorithm>
@@ -144,8 +143,6 @@ MiniLlm::MiniLlm(ModelConfig config, ModelWeights weights) : config_(std::move(c
     if (config_.num_layers == 0) {
         config_.num_layers = weights_.layers.size();
     }
-    engine::validate_model_config(config_);
-    engine::validate_model_weights(config_, weights_);
     layer_weights_.clear();
     layer_weights_.reserve(weights_.layers.size());
     rope_q_.clear();
@@ -153,7 +150,6 @@ MiniLlm::MiniLlm(ModelConfig config, ModelWeights weights) : config_(std::move(c
     rope_k_.clear();
     rope_k_.reserve(weights_.layers.size());
     for (auto& layer_w : weights_.layers) {
-        engine::validate_decoder_layer_weights(config_, &layer_w);
         layer_weights_.push_back(&layer_w);
         rope_q_.emplace_back(config_.rope_base, config_.head_dim, config_.rope_dim);
         rope_k_.emplace_back(config_.rope_base, config_.head_dim, config_.rope_dim);
@@ -186,13 +182,13 @@ ModelWeights& MiniLlm::mutable_weights() noexcept {
 
 void MiniLlm::configure_cache(size_t max_seq_len, size_t page_size) {
     cache_page_size_ = page_size;
-    engine::KVCacheConfig cfg;
+    KVCacheConfig cfg;
     cfg.num_layers = num_layers();
     cfg.num_kv_heads = config().num_kv_heads;
     cfg.max_seq_len = max_seq_len;
     cfg.head_dim = config().head_dim;
     cfg.page_size = page_size;
-    cache_ = std::make_unique<engine::KVCache>(cfg);
+    cache_ = std::make_unique<KVCache>(cfg);
 }
 
 void MiniLlm::ensure_cache(size_t min_seq_len) {
@@ -220,8 +216,7 @@ void MiniLlm::prefill(const std::vector<uint32_t>& token_ids, float* hidden_out)
     in.is_prefill = true;
     engine::embed_token_ids_into(token_ids, weights().token_embedding, d_model(), in.hidden_states);
 
-    CacheBridge cache_bridge = engine::make_cache_bridge(*cache_);
-    model::forward_model(config_, layer_weights_, rope_q_, rope_k_, in, cache_bridge, hidden_out, nullptr);
+    model::forward_model(config_, layer_weights_, rope_q_, rope_k_, in, cache_.get(), hidden_out, nullptr);
 }
 
 void MiniLlm::decode(uint32_t token_id, float* hidden_out) {
@@ -235,8 +230,7 @@ void MiniLlm::decode(uint32_t token_id, float* hidden_out) {
     const std::vector<uint32_t> token_ids{token_id};
     engine::embed_token_ids_into(token_ids, weights().token_embedding, d_model(), in.hidden_states);
 
-    CacheBridge cache_bridge = engine::make_cache_bridge(*cache_);
-    model::forward_model(config_, layer_weights_, rope_q_, rope_k_, in, cache_bridge, hidden_out, nullptr);
+    model::forward_model(config_, layer_weights_, rope_q_, rope_k_, in, cache_.get(), hidden_out, nullptr);
 }
 
 void MiniLlm::forward_train(const std::vector<uint32_t>& token_ids,
@@ -250,8 +244,7 @@ void MiniLlm::forward_train(const std::vector<uint32_t>& token_ids,
     engine::embed_token_ids_into(token_ids, weights().token_embedding, d_model(), in.hidden_states);
 
     layer_tapes.resize(num_layers());
-    CacheBridge cache_bridge;
-    model::forward_model(config_, layer_weights_, rope_q_, rope_k_, in, cache_bridge, hidden_out, &layer_tapes);
+    model::forward_model(config_, layer_weights_, rope_q_, rope_k_, in, nullptr, hidden_out, &layer_tapes);
 }
 
 // --- Backward -----------------------------------------------------------------
