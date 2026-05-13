@@ -1,6 +1,6 @@
 #include "model/executor.h"
 
-#include "model/kv_cache.h"
+#include "model/cache.h"
 
 #include <cstddef>
 #include <utility>
@@ -14,7 +14,7 @@ namespace {
 // tensors are held in function-local vectors; on the training path they are stored in `tape` for backward.
 // `cache` may be null when `input.use_cache == false`.
 void forward_attention_block(const ModelConfig& config, const DecoderLayerWeights& weights, const ForwardInput& input,
-                             KVCache* cache, kernel::RopeCache& rope_q, kernel::RopeCache& rope_k,
+                             KVCache* cache, RopeCache& rope_q, RopeCache& rope_k,
                              float* hidden_after_attn_out, BlockForwardTape* tape) {
     const size_t seq_len = input.seq_len;
     const size_t q_proj_dim = config.num_heads * config.head_dim;
@@ -82,8 +82,18 @@ void forward_attention_block(const ModelConfig& config, const DecoderLayerWeight
     const kernel::RopeParams rope_k_params{seq_len, config.num_kv_heads, config.head_dim};
     std::vector<float>& q_rope = (tape != nullptr) ? tape->q_rope : q_pre;
     std::vector<float>& k_rope = (tape != nullptr) ? tape->k_rope : k_pre;
-    kernel::apply_rope(q_rope.data(), positions_ptr, rope_q, rope_q_params);
-    kernel::apply_rope(k_rope.data(), positions_ptr, rope_k, rope_k_params);
+    size_t rope_max_pos = 0;
+    for (size_t i = 0; i < seq_len; ++i) {
+        if (positions_ptr[i] > rope_max_pos) {
+            rope_max_pos = positions_ptr[i];
+        }
+    }
+    rope_q.ensure(rope_max_pos + 1);
+    rope_k.ensure(rope_max_pos + 1);
+    kernel::apply_rope(q_rope.data(), positions_ptr, rope_q.cos_data(), rope_q.sin_data(), rope_q.rot_dim(),
+                       rope_q_params);
+    kernel::apply_rope(k_rope.data(), positions_ptr, rope_k.cos_data(), rope_k.sin_data(), rope_k.rot_dim(),
+                       rope_k_params);
 
     // --- Full K/V span (cached prefix + current step) for attention ---
     const float* k_all_ptr = nullptr;
@@ -186,7 +196,7 @@ void forward_attention_block(const ModelConfig& config, const DecoderLayerWeight
 
 // Full decoder layer: attention block (above) then post-norm + SiLU MLP + residual.
 void forward_decoder_layer(const ModelConfig& config, const DecoderLayerWeights& weights, const ForwardInput& input,
-                           KVCache* cache, kernel::RopeCache& rope_q, kernel::RopeCache& rope_k, float* hidden_out,
+                           KVCache* cache, RopeCache& rope_q, RopeCache& rope_k, float* hidden_out,
                            BlockForwardTape* tape) {
     const size_t seq_len = input.seq_len;
     const kernel::RmsNormParams norm_params{seq_len, config.d_model};
@@ -243,7 +253,7 @@ void forward_decoder_layer(const ModelConfig& config, const DecoderLayerWeights&
 } // namespace
 
 void forward_model(const ModelConfig& config, const std::vector<DecoderLayerWeights*>& layer_weights,
-                   std::vector<kernel::RopeCache>& rope_q, std::vector<kernel::RopeCache>& rope_k,
+                   std::vector<RopeCache>& rope_q, std::vector<RopeCache>& rope_k,
                    const ForwardInput& input,
                    KVCache* cache, float* hidden_out, std::vector<BlockForwardTape>* layer_tapes) {
     std::vector<float> layer_hidden_a(input.seq_len * config.d_model, 0.0f);

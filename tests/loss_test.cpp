@@ -1,4 +1,5 @@
 #include "engine/decode.h"
+#include "train/train.h"
 
 #include <gtest/gtest.h>
 
@@ -8,7 +9,10 @@
 
 namespace {
 
-using namespace engine;
+using engine::LogitsOutput;
+using engine::project_logits;
+using train::cross_entropy;
+using train::CrossEntropyResult;
 
 TEST(LossTest, ProjectLogitsComputesRowWiseDotProducts) {
     const size_t seq_len = 2;
@@ -27,7 +31,7 @@ TEST(LossTest, ProjectLogitsComputesRowWiseDotProducts) {
     std::vector<float> output_projection = {1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f};
 
     LogitsOutput logits;
-    project_logits_into(hidden, seq_len, d_model, output_projection, vocab_size, logits);
+    project_logits(hidden, seq_len, d_model, output_projection, vocab_size, logits);
     ASSERT_EQ(logits.logits.size(), seq_len * vocab_size);
     EXPECT_FLOAT_EQ(logits.logits[0], 1.0f);
     EXPECT_FLOAT_EQ(logits.logits[1], 2.0f);
@@ -52,7 +56,7 @@ TEST(LossTest, CrossEntropyNextTokenReturnsAverageLossAndAccuracy) {
     std::vector<uint32_t> token_ids = {0, 1, 2};
 
     CrossEntropyResult ce;
-    cross_entropy_next_token_into(logits, token_ids, ce);
+    cross_entropy(logits, token_ids, ce);
     EXPECT_EQ(ce.valid_steps, 2u);
     ASSERT_EQ(ce.steps.size(), 2u);
     EXPECT_EQ(ce.steps[0], 0u);
@@ -85,7 +89,7 @@ TEST(LossTest, CrossEntropyStepsUsesSelectedPredictionRows) {
     const std::vector<size_t> steps = {1u, 3u};
 
     CrossEntropyResult ce;
-    cross_entropy_steps_into(logits, token_ids, steps, ce);
+    cross_entropy(logits, token_ids, steps, ce);
 
     EXPECT_EQ(ce.valid_steps, 2u);
     EXPECT_EQ(ce.steps, steps);
@@ -109,13 +113,13 @@ TEST(LossTest, ProjectLogitsStepsPackedMatchesDenseForSameSteps) {
     const std::vector<size_t> steps = {0u, 2u};
 
     LogitsOutput dense;
-    project_logits_into(hidden, seq_len, d_model, output_projection, vocab_size, dense);
+    project_logits(hidden, seq_len, d_model, output_projection, vocab_size, dense);
     ASSERT_FALSE(dense.packed_prediction_rows);
 
     std::vector<float> gathered;
     LogitsOutput packed;
-    project_logits_steps_into(hidden.data(), seq_len, d_model, std::span<const size_t>(steps.data(), steps.size()),
-                              output_projection, vocab_size, packed, gathered);
+    project_logits(hidden.data(), seq_len, d_model, std::span<const size_t>(steps.data(), steps.size()),
+                   output_projection, vocab_size, packed, gathered);
     ASSERT_TRUE(packed.packed_prediction_rows);
     ASSERT_EQ(packed.logits.size(), steps.size() * vocab_size);
     for (size_t i = 0; i < steps.size(); ++i) {
@@ -125,9 +129,9 @@ TEST(LossTest, ProjectLogitsStepsPackedMatchesDenseForSameSteps) {
     }
 
     CrossEntropyResult ce_dense;
-    cross_entropy_steps_into(dense, token_ids, steps, ce_dense);
+    cross_entropy(dense, token_ids, steps, ce_dense);
     CrossEntropyResult ce_packed;
-    cross_entropy_steps_into(packed, token_ids, steps, ce_packed);
+    cross_entropy(packed, token_ids, steps, ce_packed);
     EXPECT_FLOAT_EQ(ce_dense.loss, ce_packed.loss);
     EXPECT_FLOAT_EQ(ce_dense.accuracy, ce_packed.accuracy);
 }

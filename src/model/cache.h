@@ -1,13 +1,19 @@
 #pragma once
 
-// Single owner of all KV-cache concerns: storage layout, append/lookup, per-layer
-// view, and the validation helpers that protect those operations. Executor and
-// mini_llm code talk to KVCache directly; no opaque-pointer bridge layer exists.
+// Model-owned runtime caches:
+//   - KVCache: per-layer autoregressive K/V backing store.
+//   - RopeCache: lazy cos/sin workspace for rotary positional embedding.
+
+#include "kernel/kernel.h"
 
 #include <cstddef>
 #include <vector>
 
 namespace model {
+
+// ============================================================
+// KV cache
+// ============================================================
 
 // Static allocation parameters for the cache backing store.
 struct KVCacheConfig {
@@ -74,6 +80,33 @@ private:
     std::vector<float> k_pages_;
     std::vector<float> v_pages_;
     std::vector<size_t> seq_lens_;
+};
+
+// ============================================================
+// RoPE cache
+// ============================================================
+
+// Stateful cos/sin table for rotary positional embedding. The model executor
+// grows it via ensure(), then passes the raw tables to kernel::apply_rope[_backward].
+class RopeCache {
+public:
+    RopeCache(float rope_base, size_t head_dim, size_t rope_dim);
+
+    void ensure(size_t max_pos_exclusive);
+
+    [[nodiscard]] size_t rot_dim() const noexcept { return rot_; }
+    [[nodiscard]] const float* cos_data() const noexcept { return cos_.data(); }
+    [[nodiscard]] const float* sin_data() const noexcept { return sin_.data(); }
+
+private:
+    float rope_base_ = 10000.0f;
+    size_t head_dim_ = 0;
+    size_t rope_dim_ = 0;
+    size_t rot_ = 0;
+    size_t half_ = 0;
+    size_t max_pos_cached_ = 0;
+    std::vector<float> cos_;
+    std::vector<float> sin_;
 };
 
 } // namespace model

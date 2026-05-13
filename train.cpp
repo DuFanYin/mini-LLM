@@ -11,7 +11,6 @@
 #include <string>
 #include <vector>
 
-using namespace train;
 using engine::save_model;
 
 namespace {
@@ -82,13 +81,13 @@ int main(int argc, char** argv) {
     constexpr size_t kVocab = task::n_vocab();
     std::unique_ptr<model::MiniLlm> model =
         std::make_unique<model::MiniLlm>(model::MiniLlm::init_random(/*vocab_size=*/kVocab, model_seed));
-    model::ModelWeights adam_m = clone_model(model->weights());
-    model::ModelWeights adam_v = clone_model(model->weights());
+    model::ModelWeights adam_m = train::zeros_like(model->weights());
+    model::ModelWeights adam_v = train::zeros_like(model->weights());
 
     model->configure_cache(128);
 
     task::Sampler sampler(train_sampler_seed);
-    const auto val_set = task::batch_at_seed(/*count=*/256, val_batch_seed);
+    const auto val_set = task::batch_from_seed(/*count=*/256, val_batch_seed);
 
     float loss_sum = 0.0f;
     float acc_sum = 0.0f;
@@ -118,15 +117,15 @@ int main(int argc, char** argv) {
         probe_seed,
         elapsed_sec());
 
-    TrainWorkspace workspace{};
+    train::Workspace workspace{};
     bool reached_target = false;
     for (size_t step = 1; step <= max_steps; ++step) {
         const auto step_t0 = std::chrono::steady_clock::now();
         const auto token_ids = sampler.sample_sequence();
-        task::answer_prediction_steps_into(token_ids, workspace.prediction_steps);
-        const StepMetrics m =
-            train_step(*model, token_ids, workspace.prediction_steps, step, lr, k_beta1, k_beta2, k_eps, weight_decay,
-                       max_grad_norm, adam_m, adam_v, workspace);
+        task::answer_steps(token_ids, workspace.prediction_steps);
+        const train::StepMetrics m =
+            train::step(*model, token_ids, workspace.prediction_steps, step, lr, k_beta1, k_beta2, k_eps, weight_decay,
+                        max_grad_norm, adam_m, adam_v, workspace);
         const double step_s =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - step_t0).count();
 
@@ -154,8 +153,8 @@ int main(int argc, char** argv) {
 
         if (step % eval_every == 0) {
             const auto eval_t0 = std::chrono::steady_clock::now();
-            const float val_answer_acc = task::compute_answer_accuracy(*model, val_set);
-            const auto [hits, trials] = task::count_probe_hits(*model, /*trials=*/16, probe_seed);
+            const float val_answer_acc = task::answer_accuracy(*model, val_set);
+            const auto [hits, trials] = task::probe_hits(*model, /*trials=*/16, probe_seed);
             const double eval_s =
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - eval_t0).count();
             const float probe_rate =

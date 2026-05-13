@@ -41,8 +41,8 @@ TEST(DataTest, SamplerOutput) {
 }
 
 TEST(DataTest, FixedBatchRepeatable) {
-    const auto a = batch_at_seed(64, 12345);
-    const auto b = batch_at_seed(64, 12345);
+    const auto a = batch_from_seed(64, 12345);
+    const auto b = batch_from_seed(64, 12345);
     ASSERT_EQ(a.size(), b.size());
     for (size_t i = 0; i < a.size(); ++i) {
         EXPECT_EQ(a[i], b[i]);

@@ -1,5 +1,6 @@
 #include "kernel/kernel.h"
-#include "model/kv_cache.h"
+#include "model/cache.h"
+#include "model/mini_llm.h"
 
 #include <gtest/gtest.h>
 
@@ -127,7 +128,7 @@ TEST(AttentionOpsTest, GQAMappingUsesGroupedKvHeads) {
 }
 
 TEST(RopeTest, PositionChangesRotation) {
-    kernel::RopeCache rc(10000.0f, 4, 4);
+    model::RopeCache rc(10000.0f, 4, 4);
     std::vector<float> base = {1.0f, 0.0f, 1.0f, 0.0f}; // [S=1,H=1,D=4]
 
     std::vector<float> pos0 = base;
@@ -137,9 +138,10 @@ TEST(RopeTest, PositionChangesRotation) {
     const kernel::RopeParams rope_params{1, 1, 4};
     const std::vector<size_t> p0{0};
     const std::vector<size_t> p5{5};
-    kernel::apply_rope(pos0.data(), p0.data(), rc, rope_params);
-    kernel::apply_rope(pos5.data(), p5.data(), rc, rope_params);
-    kernel::apply_rope(pos5_b.data(), p5.data(), rc, rope_params);
+    rc.ensure(6);
+    kernel::apply_rope(pos0.data(), p0.data(), rc.cos_data(), rc.sin_data(), rc.rot_dim(), rope_params);
+    kernel::apply_rope(pos5.data(), p5.data(), rc.cos_data(), rc.sin_data(), rc.rot_dim(), rope_params);
+    kernel::apply_rope(pos5_b.data(), p5.data(), rc.cos_data(), rc.sin_data(), rc.rot_dim(), rope_params);
 
     // position 0 keeps the pair unchanged in this setup
     EXPECT_NEAR(pos0[0], 1.0f, 1e-6f);

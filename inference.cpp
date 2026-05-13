@@ -2,6 +2,7 @@
 
 #include "model/mini_llm.h"
 #include "engine/decode.h"
+#include "kernel/kernel.h"
 #include "task/task.h"
 
 #include <algorithm>
@@ -216,17 +217,18 @@ int main(int argc, char** argv) {
         // First answer token comes from the last prompt position's hidden row.
         std::vector<uint32_t> pred_span;
         pred_span.reserve(gold_span.size());
+        std::vector<float> logits(vocab_size);
         const float* last_row = prompt_hidden.data() + (prompt.size() - 1u) * d_model;
-        uint32_t token = engine::sample_from_hidden_row(std::span<const float>(last_row, d_model), weights.output_projection,
-                                                        vocab_size, d_model, temperature, rng);
+        kernel::gemm_nt(last_row, weights.output_projection.data(), logits.data(), 1, vocab_size, d_model);
+        uint32_t token = engine::sample(logits, temperature, rng);
         pred_span.push_back(token);
 
         // Decode: one token in, one hidden row out, KV cache reused. Repeat for the rest of the answer span.
         std::vector<float> decode_row(d_model, 0.0f);
         for (size_t i = 1; i < gold_span.size(); ++i) {
             model->decode(token, decode_row.data());
-            token = engine::sample_from_hidden_row(std::span<const float>(decode_row.data(), d_model), weights.output_projection,
-                                                   vocab_size, d_model, temperature, rng);
+            kernel::gemm_nt(decode_row.data(), weights.output_projection.data(), logits.data(), 1, vocab_size, d_model);
+            token = engine::sample(logits, temperature, rng);
             pred_span.push_back(token);
         }
 

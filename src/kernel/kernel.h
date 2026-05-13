@@ -1,7 +1,7 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
-#include <vector>
 
 namespace kernel {
 
@@ -12,25 +12,6 @@ constexpr size_t idx3(size_t a, size_t b, size_t c, size_t B, size_t C) noexcept
 
 [[nodiscard]] float silu(float x);
 [[nodiscard]] float silu_derivative(float x);
-
-class RopeCache {
-public:
-    RopeCache(float rope_base, size_t head_dim, size_t rope_dim);
-    [[nodiscard]] size_t rot_dim() const noexcept;
-    void ensure(size_t max_pos_exclusive);
-    [[nodiscard]] float cos_at(size_t pos, size_t i) const;
-    [[nodiscard]] float sin_at(size_t pos, size_t i) const;
-
-private:
-    float rope_base_ = 10000.0f;
-    size_t head_dim_ = 0;
-    size_t rope_dim_ = 0;
-    size_t rot_ = 0;
-    size_t half_ = 0;
-    size_t max_pos_cached_ = 0;
-    std::vector<float> cos_;
-    std::vector<float> sin_;
-};
 
 struct AddParams {
     size_t size = 0;
@@ -80,7 +61,10 @@ void linear(const float* x, const float* w, const float* bias, float* y, const L
 void rms_norm(const float* x, const float* weight, float eps, float* y, const RmsNormParams& p);
 void silu_mul(const float* gate, const float* up, float* hidden, const SiluMulParams& p);
 void softmax(const float* logits, float* probs, const SoftmaxParams& p);
-void apply_rope(float* x, const size_t* positions, RopeCache& cache, const RopeParams& p);
+// Pure rotary math: rotate each (x_2i, x_2i+1) by precomputed cos/sin at `positions[step]`.
+// `cos_tab` / `sin_tab` are row-major [pos, freq_idx] with stride `rot/2`; caller is responsible for growing them.
+void apply_rope(float* x, const size_t* positions, const float* cos_tab, const float* sin_tab, size_t rot,
+                const RopeParams& p);
 
 // Shared GQA forward: arbitrary seq_len >= 1; ctx is [seq_len * num_heads * head_dim].
 // Pass attn_probs_out when training tape needs softmax cache; nullptr for inference decode or prefill without tape.
@@ -95,19 +79,10 @@ void silu_mul_backward(const float* gate, const float* up, const float* grad_hid
                        const SiluMulParams& p);
 void linear_backward(const float* x, const float* w, bool has_bias, const float* dy, float* dx, float* grad_w,
                      float* grad_b, const LinearParams& p);
-void apply_rope_backward(const float* grad_out, float* grad_in, const size_t* positions, RopeCache& cache,
-                         const RopeParams& p);
+void apply_rope_backward(const float* grad_out, float* grad_in, const size_t* positions, const float* cos_tab,
+                         const float* sin_tab, size_t rot, const RopeParams& p);
 void rms_norm_backward(const float* x, const float* weight, float eps, const float* dy, float* dx, float* grad_weight,
                        const RmsNormParams& p);
-
-void backward_output_projection(const float* hidden_states, const float* probs, const uint32_t* targets,
-                                const size_t* steps, size_t valid_steps, size_t d_model, size_t vocab_size,
-                                float* grad_output_projection);
-void backward_hidden(const float* probs, const uint32_t* targets, const size_t* steps, size_t valid_steps,
-                     const float* output_projection, size_t total_steps, size_t d_model, size_t vocab_size,
-                     float* grad_hidden_out);
-void backward_embedding(const uint32_t* token_ids, size_t seq_len, const float* grad_hidden, size_t d_model,
-                        float* grad_token_embed);
 
 } // namespace kernel
 

@@ -188,7 +188,7 @@ bool is_valid(const std::vector<uint32_t>& t) noexcept {
     return true;
 }
 
-void answer_prediction_steps_into(const std::vector<uint32_t>& t, std::vector<size_t>& out) {
+void answer_steps(const std::vector<uint32_t>& t, std::vector<size_t>& out) {
     out.clear();
     Layout layout;
     if (!infer_layout(t, layout)) {
@@ -200,13 +200,13 @@ void answer_prediction_steps_into(const std::vector<uint32_t>& t, std::vector<si
     }
 }
 
-std::vector<size_t> answer_prediction_steps(const std::vector<uint32_t>& t) {
+std::vector<size_t> answer_steps(const std::vector<uint32_t>& t) {
     std::vector<size_t> steps;
-    answer_prediction_steps_into(t, steps);
+    answer_steps(t, steps);
     return steps;
 }
 
-std::vector<std::vector<uint32_t>> batch_at_seed(size_t count, uint32_t seed) {
+std::vector<std::vector<uint32_t>> batch_from_seed(size_t count, uint32_t seed) {
     Sampler sampler(seed);
     return sampler.sample_batch(count);
 }

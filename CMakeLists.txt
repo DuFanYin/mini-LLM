@@ -31,13 +31,12 @@ add_library(model STATIC
   src/model/mini_llm.cpp
   src/model/executor_forward.cpp
   src/model/executor_backward.cpp
-  src/model/kv_cache.cpp
+  src/model/cache.cpp
   src/engine/io.cpp
   ${MINI_LLM_CORE_SRC}
   ${MINI_LLM_GEMM_DRIVER_SRC}
   ${MINI_LLM_ATTENTION_SRC}
   src/kernel/norm_rope.cpp
-  src/kernel/backward.cpp
 )
 
 if(MINI_LLM_USE_ACCELERATE)
@@ -49,11 +48,10 @@ target_link_libraries(model PUBLIC mini_transformer_warnings)
 add_library(language_model STATIC
   src/engine/embedding.cpp
   src/engine/decode.cpp
-  src/train/loss.cpp
   ${MINI_LLM_OPTIMIZER_SRC}
-  src/train/autograd.cpp
+  src/train/loss.cpp
+  src/train/step.cpp
   src/task/sample_data.cpp
-  src/task/metrics.cpp
   src/task/evaluation.cpp
 )
 target_include_directories(language_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)

@@ -13,7 +13,6 @@ namespace {
 
 using namespace model;
 using namespace engine;
-using namespace train;
 
 constexpr float kGuard = -12345.0f;
 
@@ -104,7 +103,7 @@ TEST(ModelTrainTest, BatchMetricsReturnsLossAndAccuracy) {
     const std::vector<uint32_t> token_ids = {
         0u, 1u, 26u, 3u, 4u, 27u, 5u, 6u, 28u, 7u, 8u, 29u, 9u, 10u, 30u, 3u, 4u};
     ASSERT_TRUE(task::is_valid(token_ids));
-    const task::TrainBatchMetrics metrics = task::compute_batch_metrics(*m, token_ids);
+    const task::TrainBatchMetrics metrics = task::batch_metrics(*m, token_ids);
     EXPECT_EQ(metrics.valid_steps, task::span_a_len_min());
     EXPECT_GE(metrics.loss, 0.0f);
     EXPECT_GE(metrics.accuracy, 0.0f);
@@ -114,24 +113,24 @@ TEST(ModelTrainTest, BatchMetricsReturnsLossAndAccuracy) {
 TEST(ModelTrainTest, AdamWReducesLossOnFixedSample) {
     constexpr size_t k_vocab = task::n_vocab();
     auto m = std::make_unique<model::MiniLlm>(model::MiniLlm::init_random(k_vocab, 5678u));
-    model::ModelWeights adam_m = clone_model(m->weights());
-    model::ModelWeights adam_v = clone_model(m->weights());
+    model::ModelWeights adam_m = train::zeros_like(m->weights());
+    model::ModelWeights adam_v = train::zeros_like(m->weights());
 
     const std::vector<uint32_t> token_ids = {
         0u, 1u, 26u, 3u, 4u, 27u, 5u, 6u, 28u, 7u, 8u, 29u, 9u, 10u, 30u, 3u, 4u};
     ASSERT_TRUE(task::is_valid(token_ids));
 
-    const float loss_before = task::compute_batch_metrics(*m, token_ids).loss;
+    const float loss_before = task::batch_metrics(*m, token_ids).loss;
     constexpr float k_beta1 = 0.9f;
     constexpr float k_beta2 = 0.95f;
     constexpr float k_eps = 1e-8f;
-    const std::vector<size_t> prediction_steps = task::answer_prediction_steps(token_ids);
-    TrainWorkspace workspace{};
+    const std::vector<size_t> prediction_steps = task::answer_steps(token_ids);
+    train::Workspace workspace{};
     for (size_t i = 0; i < 40; ++i) {
-        (void)train_step(*m, token_ids, prediction_steps, i + 1, 0.02f, k_beta1, k_beta2, k_eps, 0.02f, 1.0f,
-                         adam_m, adam_v, workspace);
+        (void)train::step(*m, token_ids, prediction_steps, i + 1, 0.02f, k_beta1, k_beta2, k_eps, 0.02f, 1.0f,
+                          adam_m, adam_v, workspace);
     }
-    const float loss_after = task::compute_batch_metrics(*m, token_ids).loss;
+    const float loss_after = task::batch_metrics(*m, token_ids).loss;
     EXPECT_LT(loss_after, loss_before);
 }
 

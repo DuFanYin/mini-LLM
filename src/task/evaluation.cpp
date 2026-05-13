@@ -1,5 +1,7 @@
 #include "task/task.h"
 #include "engine/decode.h"
+#include "kernel/kernel.h"
+#include "train/train.h"
 
 #include <cstring>
 #include <random>
@@ -8,6 +10,35 @@
 
 namespace task {
 
+// ------------------------------------------------------------
+// Training-time metrics on a single batch (forward + CE).
+// ------------------------------------------------------------
+
+TrainBatchMetrics batch_metrics(model::MiniLlm& m, const std::vector<uint32_t>& token_ids) {
+    const model::ModelWeights& weights = m.weights();
+    std::vector<float> hidden_out(token_ids.size() * m.d_model(), 0.0f);
+    m.prefill(token_ids, hidden_out.data());
+    std::vector<size_t> steps;
+    answer_steps(token_ids, steps);
+    std::vector<float> gathered;
+    engine::LogitsOutput logits;
+    engine::project_logits(hidden_out.data(), token_ids.size(), m.d_model(),
+                           std::span<const size_t>(steps.data(), steps.size()), weights.output_projection,
+                           weights.vocab_size, logits, gathered);
+    train::CrossEntropyResult ce;
+    train::cross_entropy(logits, token_ids, steps, ce);
+
+    TrainBatchMetrics out;
+    out.loss = ce.loss;
+    out.accuracy = ce.accuracy;
+    out.valid_steps = ce.valid_steps;
+    return out;
+}
+
+// ------------------------------------------------------------
+// Inference-time correctness probes (argmax / greedy decode).
+// ------------------------------------------------------------
+
 uint32_t last_argmax(model::MiniLlm& m, const std::vector<uint32_t>& prompt) {
     const model::ModelWeights& weights = m.weights();
     const size_t vocab_size = weights.vocab_size;
@@ -15,14 +46,17 @@ uint32_t last_argmax(model::MiniLlm& m, const std::vector<uint32_t>& prompt) {
 
     std::vector<float> hidden(prompt.size() * d_model, 0.0f);
     m.prefill(prompt, hidden.data());
-    const size_t last = prompt.size() - 1;
-    std::vector<float> row(d_model);
-    std::memcpy(row.data(), hidden.data() + last * d_model, d_model * sizeof(float));
-    return engine::argmax_from_hidden(std::span<const float>(row.data(), row.size()), weights.output_projection, vocab_size,
-                                      d_model);
+    const float* last_row = hidden.data() + (prompt.size() - 1u) * d_model;
+    std::vector<float> logits(vocab_size);
+    kernel::gemm_nt(last_row, weights.output_projection.data(), logits.data(), 1, vocab_size, d_model);
+    return engine::argmax(logits);
 }
 
-bool is_answer_allowed(model::MiniLlm& m, const std::vector<uint32_t>& token_ids) {
+namespace {
+
+// True iff every answer-span position's argmax token matches the gold token.
+// Only used by `answer_accuracy` below.
+bool is_answer_correct(model::MiniLlm& m, const std::vector<uint32_t>& token_ids) {
     Layout layout;
     if (!infer_layout(token_ids, layout)) {
         return false;
@@ -36,39 +70,41 @@ bool is_answer_allowed(model::MiniLlm& m, const std::vector<uint32_t>& token_ids
     std::vector<float> hidden_out(token_ids.size() * d_model, 0.0f);
     m.prefill(token_ids, hidden_out.data());
     std::vector<size_t> pred_steps;
-    answer_prediction_steps_into(token_ids, pred_steps);
+    answer_steps(token_ids, pred_steps);
     std::vector<float> gathered;
     engine::LogitsOutput logits;
-    engine::project_logits_steps_into(hidden_out.data(), token_ids.size(), d_model,
-                                      std::span<const size_t>(pred_steps.data(), pred_steps.size()), weights.output_projection,
-                                      weights.vocab_size, logits, gathered);
+    engine::project_logits(hidden_out.data(), token_ids.size(), d_model,
+                           std::span<const size_t>(pred_steps.data(), pred_steps.size()), weights.output_projection,
+                           weights.vocab_size, logits, gathered);
 
     const size_t vocab_size = weights.vocab_size;
     for (size_t i = 0; i < layout.answer_len; ++i) {
         const float* row = &logits.logits[i * vocab_size];
-        size_t argmax = 0;
+        size_t argmax_idx = 0;
         float best = row[0];
         for (size_t v = 1; v < vocab_size; ++v) {
             if (row[v] > best) {
                 best = row[v];
-                argmax = v;
+                argmax_idx = v;
             }
         }
-        if (argmax != token_ids[layout.answer_start + i]) {
+        if (argmax_idx != token_ids[layout.answer_start + i]) {
             return false;
         }
     }
     return true;
 }
 
-float compute_answer_accuracy(model::MiniLlm& m, const std::vector<std::vector<uint32_t>>& val_set) {
+} // anonymous namespace
+
+float answer_accuracy(model::MiniLlm& m, const std::vector<std::vector<uint32_t>>& val_set) {
     size_t correct = 0;
     size_t total = 0;
     for (const auto& seq : val_set) {
         if (!is_valid(seq)) {
             continue;
         }
-        if (is_answer_allowed(m, seq)) {
+        if (is_answer_correct(m, seq)) {
             ++correct;
         }
         ++total;
@@ -76,7 +112,7 @@ float compute_answer_accuracy(model::MiniLlm& m, const std::vector<std::vector<u
     return (total == 0) ? 0.0f : (static_cast<float>(correct) / static_cast<float>(total));
 }
 
-std::pair<size_t, size_t> count_probe_hits(model::MiniLlm& m, size_t trials, uint32_t rng_seed) {
+std::pair<size_t, size_t> probe_hits(model::MiniLlm& m, size_t trials, uint32_t rng_seed) {
     if (trials == 0 || m.weights().vocab_size < n_vocab()) {
         return {0u, 0u};
     }
@@ -99,11 +135,14 @@ std::pair<size_t, size_t> count_probe_hits(model::MiniLlm& m, size_t trials, uin
         if (gold.empty() || token != gold[0]) {
             exact = false;
         }
+        const size_t d_model = m.d_model();
+        const size_t vocab_size = m.weights().vocab_size;
+        std::vector<float> row(d_model, 0.0f);
+        std::vector<float> logits(vocab_size);
         for (size_t i = 1; i < gold.size() && exact; ++i) {
-            std::vector<float> row(m.d_model(), 0.0f);
             m.decode(token, row.data());
-            token = engine::argmax_from_hidden(std::span<const float>(row.data(), row.size()),
-                                               m.weights().output_projection, m.weights().vocab_size, m.d_model());
+            kernel::gemm_nt(row.data(), m.weights().output_projection.data(), logits.data(), 1, vocab_size, d_model);
+            token = engine::argmax(logits);
             if (token != gold[i]) {
                 exact = false;
             }

@@ -2,7 +2,7 @@
 
 // Shared structs for config, weights, I/O, and autograd tape — no execution logic.
 // Decoder layer weight layout (on-disk save order): norm1 | Q,K,V,o_proj | norm2 | MLP gate,up,down.
-// KV-cache types (KVCache, CacheView, KVCacheConfig) live in model/kv_cache.h.
+// Runtime cache types (KVCache, CacheView, KVCacheConfig, RopeCache) live in model/cache.h.
 
 #include <cstddef>
 #include <cstdint>

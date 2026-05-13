@@ -5,6 +5,12 @@
 
 namespace train {
 
+// ------------------------------------------------------------
+// File-local helpers: per-tensor / per-layer primitives composed
+// into the public per-model entry points further below.
+// ------------------------------------------------------------
+namespace {
+
 model::DecoderLayerWeights clone_decoder_layer_weights(const model::DecoderLayerWeights& ref) {
     model::DecoderLayerWeights g;
     g.norm1.weight.assign(ref.norm1.weight.size(), 0.0f);
@@ -32,43 +38,23 @@ model::DecoderLayerWeights clone_decoder_layer_weights(const model::DecoderLayer
     return g;
 }
 
-model::ModelWeights clone_model(const model::ModelWeights& ref) {
-    model::ModelWeights g;
-    g.vocab_size = ref.vocab_size;
-    g.layers.reserve(ref.layers.size());
-    for (const auto& layer : ref.layers) {
-        g.layers.push_back(clone_decoder_layer_weights(layer));
-    }
-    g.token_embedding.assign(ref.token_embedding.size(), 0.0f);
-    g.output_projection.assign(ref.output_projection.size(), 0.0f);
-    return g;
-}
-
-void clear(model::LinearWeights& lg) {
+void clear_linear(model::LinearWeights& lg) {
     std::fill(lg.weight.begin(), lg.weight.end(), 0.0f);
     if (!lg.bias.empty()) {
         std::fill(lg.bias.begin(), lg.bias.end(), 0.0f);
     }
 }
 
-void clear(model::DecoderLayerWeights& g) {
+void clear_decoder_layer(model::DecoderLayerWeights& g) {
     std::fill(g.norm1.weight.begin(), g.norm1.weight.end(), 0.0f);
     std::fill(g.norm2.weight.begin(), g.norm2.weight.end(), 0.0f);
-    clear(g.attention.q_proj);
-    clear(g.attention.k_proj);
-    clear(g.attention.v_proj);
-    clear(g.attention.o_proj);
-    clear(g.mlp.gate);
-    clear(g.mlp.up);
-    clear(g.mlp.down);
-}
-
-void clear(model::ModelWeights& g) {
-    for (auto& layer : g.layers) {
-        clear(layer);
-    }
-    std::fill(g.token_embedding.begin(), g.token_embedding.end(), 0.0f);
-    std::fill(g.output_projection.begin(), g.output_projection.end(), 0.0f);
+    clear_linear(g.attention.q_proj);
+    clear_linear(g.attention.k_proj);
+    clear_linear(g.attention.v_proj);
+    clear_linear(g.attention.o_proj);
+    clear_linear(g.mlp.gate);
+    clear_linear(g.mlp.up);
+    clear_linear(g.mlp.down);
 }
 
 void vector_add_sq_sum(const std::vector<float>& v, double* acc) {
@@ -117,6 +103,104 @@ void vector_scale(std::vector<float>& v, float scale) {
     }
 }
 
+void adamw_update_vec(std::vector<float>& param, const std::vector<float>& grad, std::vector<float>& m,
+                      std::vector<float>& v, size_t t, float lr, float beta1, float beta2, float eps,
+                      float weight_decay) {
+    const size_t n = param.size();
+    if (n == 0) {
+        return;
+    }
+    const float one_minus_beta1 = 1.0f - beta1;
+    const float one_minus_beta2 = 1.0f - beta2;
+    const float inv_bias_c1 = 1.0f / (1.0f - std::pow(beta1, static_cast<float>(t)));
+    const float inv_bias_c2 = 1.0f / (1.0f - std::pow(beta2, static_cast<float>(t)));
+
+    float* p_param = param.data();
+    const float* p_grad = grad.data();
+    float* p_m = m.data();
+    float* p_v = v.data();
+
+    for (size_t i = 0; i < n; ++i) {
+        const float gi = p_grad[i];
+        const float mi = beta1 * p_m[i] + one_minus_beta1 * gi;
+        const float vi = beta2 * p_v[i] + one_minus_beta2 * gi * gi;
+        p_m[i] = mi;
+        p_v[i] = vi;
+        const float m_hat = mi * inv_bias_c1;
+        const float v_hat = vi * inv_bias_c2;
+        const float pi = p_param[i];
+        const float denom = std::sqrt(v_hat) + eps;
+        p_param[i] = pi - lr * (m_hat / denom + weight_decay * pi);
+    }
+}
+
+void adamw_update_decoder_layer(model::DecoderLayerWeights& param, const model::DecoderLayerWeights& grad,
+                                model::DecoderLayerWeights& m, model::DecoderLayerWeights& v, size_t t, float lr,
+                                float beta1, float beta2, float eps, float weight_decay) {
+    adamw_update_vec(param.norm1.weight, grad.norm1.weight, m.norm1.weight, v.norm1.weight, t, lr, beta1, beta2, eps,
+                     weight_decay);
+    adamw_update_vec(param.norm2.weight, grad.norm2.weight, m.norm2.weight, v.norm2.weight, t, lr, beta1, beta2, eps,
+                     weight_decay);
+
+    adamw_update_vec(param.attention.q_proj.weight, grad.attention.q_proj.weight, m.attention.q_proj.weight,
+                     v.attention.q_proj.weight, t, lr, beta1, beta2, eps, weight_decay);
+    adamw_update_vec(param.attention.k_proj.weight, grad.attention.k_proj.weight, m.attention.k_proj.weight,
+                     v.attention.k_proj.weight, t, lr, beta1, beta2, eps, weight_decay);
+    adamw_update_vec(param.attention.v_proj.weight, grad.attention.v_proj.weight, m.attention.v_proj.weight,
+                     v.attention.v_proj.weight, t, lr, beta1, beta2, eps, weight_decay);
+    adamw_update_vec(param.attention.o_proj.weight, grad.attention.o_proj.weight, m.attention.o_proj.weight,
+                     v.attention.o_proj.weight, t, lr, beta1, beta2, eps, weight_decay);
+    adamw_update_vec(param.mlp.gate.weight, grad.mlp.gate.weight, m.mlp.gate.weight, v.mlp.gate.weight, t, lr, beta1,
+                     beta2, eps, weight_decay);
+    adamw_update_vec(param.mlp.up.weight, grad.mlp.up.weight, m.mlp.up.weight, v.mlp.up.weight, t, lr, beta1, beta2,
+                     eps, weight_decay);
+    adamw_update_vec(param.mlp.down.weight, grad.mlp.down.weight, m.mlp.down.weight, v.mlp.down.weight, t, lr, beta1,
+                     beta2, eps, weight_decay);
+
+    if (!param.attention.q_proj.bias.empty()) {
+        adamw_update_vec(param.attention.q_proj.bias, grad.attention.q_proj.bias, m.attention.q_proj.bias,
+                         v.attention.q_proj.bias, t, lr, beta1, beta2, eps, weight_decay);
+        adamw_update_vec(param.attention.k_proj.bias, grad.attention.k_proj.bias, m.attention.k_proj.bias,
+                         v.attention.k_proj.bias, t, lr, beta1, beta2, eps, weight_decay);
+        adamw_update_vec(param.attention.v_proj.bias, grad.attention.v_proj.bias, m.attention.v_proj.bias,
+                         v.attention.v_proj.bias, t, lr, beta1, beta2, eps, weight_decay);
+        adamw_update_vec(param.attention.o_proj.bias, grad.attention.o_proj.bias, m.attention.o_proj.bias,
+                         v.attention.o_proj.bias, t, lr, beta1, beta2, eps, weight_decay);
+        adamw_update_vec(param.mlp.gate.bias, grad.mlp.gate.bias, m.mlp.gate.bias, v.mlp.gate.bias, t, lr, beta1,
+                         beta2, eps, weight_decay);
+        adamw_update_vec(param.mlp.up.bias, grad.mlp.up.bias, m.mlp.up.bias, v.mlp.up.bias, t, lr, beta1, beta2, eps,
+                         weight_decay);
+        adamw_update_vec(param.mlp.down.bias, grad.mlp.down.bias, m.mlp.down.bias, v.mlp.down.bias, t, lr, beta1,
+                         beta2, eps, weight_decay);
+    }
+}
+
+} // anonymous namespace
+
+// ------------------------------------------------------------
+// Public API (declared in train/train.h).
+// ------------------------------------------------------------
+
+model::ModelWeights zeros_like(const model::ModelWeights& ref) {
+    model::ModelWeights g;
+    g.vocab_size = ref.vocab_size;
+    g.layers.reserve(ref.layers.size());
+    for (const auto& layer : ref.layers) {
+        g.layers.push_back(clone_decoder_layer_weights(layer));
+    }
+    g.token_embedding.assign(ref.token_embedding.size(), 0.0f);
+    g.output_projection.assign(ref.output_projection.size(), 0.0f);
+    return g;
+}
+
+void zero(model::ModelWeights& g) {
+    for (auto& layer : g.layers) {
+        clear_decoder_layer(layer);
+    }
+    std::fill(g.token_embedding.begin(), g.token_embedding.end(), 0.0f);
+    std::fill(g.output_projection.begin(), g.output_projection.end(), 0.0f);
+}
+
 void clip_grad(model::ModelWeights& g, float max_norm) {
     if (max_norm <= 0.0f) {
         return;
@@ -154,88 +238,16 @@ void clip_grad(model::ModelWeights& g, float max_norm) {
     vector_scale(g.output_projection, scale);
 }
 
-void adamw_update_vec(std::vector<float>& param, const std::vector<float>& grad, std::vector<float>& m,
-                      std::vector<float>& v, size_t t, float lr, float beta1, float beta2, float eps,
-                      float weight_decay) {
-    const size_t n = param.size();
-    if (n == 0) {
-        return;
-    }
-    const float one_minus_beta1 = 1.0f - beta1;
-    const float one_minus_beta2 = 1.0f - beta2;
-    const float inv_bias_c1 = 1.0f / (1.0f - std::pow(beta1, static_cast<float>(t)));
-    const float inv_bias_c2 = 1.0f / (1.0f - std::pow(beta2, static_cast<float>(t)));
-
-    float* p_param = param.data();
-    const float* p_grad = grad.data();
-    float* p_m = m.data();
-    float* p_v = v.data();
-
-    for (size_t i = 0; i < n; ++i) {
-        const float gi = p_grad[i];
-        const float mi = beta1 * p_m[i] + one_minus_beta1 * gi;
-        const float vi = beta2 * p_v[i] + one_minus_beta2 * gi * gi;
-        p_m[i] = mi;
-        p_v[i] = vi;
-        const float m_hat = mi * inv_bias_c1;
-        const float v_hat = vi * inv_bias_c2;
-        const float pi = p_param[i];
-        const float denom = std::sqrt(v_hat) + eps;
-        p_param[i] = pi - lr * (m_hat / denom + weight_decay * pi);
-    }
-}
-
-void adamw_update_decoder_layer(model::DecoderLayerWeights& param, const model::DecoderLayerWeights& grad,
-                                model::DecoderLayerWeights& m, model::DecoderLayerWeights& v, size_t t, float lr,
-                                float beta1, float beta2, float eps, float weight_decay) {
-    adamw_update_vec(param.norm1.weight, grad.norm1.weight, m.norm1.weight, v.norm1.weight, t, lr, beta1, beta2, eps,
-                      weight_decay);
-    adamw_update_vec(param.norm2.weight, grad.norm2.weight, m.norm2.weight, v.norm2.weight, t, lr, beta1, beta2, eps,
-                      weight_decay);
-
-    adamw_update_vec(param.attention.q_proj.weight, grad.attention.q_proj.weight, m.attention.q_proj.weight,
-                     v.attention.q_proj.weight, t, lr, beta1, beta2, eps, weight_decay);
-    adamw_update_vec(param.attention.k_proj.weight, grad.attention.k_proj.weight, m.attention.k_proj.weight,
-                     v.attention.k_proj.weight, t, lr, beta1, beta2, eps, weight_decay);
-    adamw_update_vec(param.attention.v_proj.weight, grad.attention.v_proj.weight, m.attention.v_proj.weight,
-                     v.attention.v_proj.weight, t, lr, beta1, beta2, eps, weight_decay);
-    adamw_update_vec(param.attention.o_proj.weight, grad.attention.o_proj.weight, m.attention.o_proj.weight,
-                     v.attention.o_proj.weight, t, lr, beta1, beta2, eps, weight_decay);
-    adamw_update_vec(param.mlp.gate.weight, grad.mlp.gate.weight, m.mlp.gate.weight, v.mlp.gate.weight, t, lr, beta1,
-                     beta2, eps, weight_decay);
-    adamw_update_vec(param.mlp.up.weight, grad.mlp.up.weight, m.mlp.up.weight, v.mlp.up.weight, t, lr, beta1, beta2,
-                     eps, weight_decay);
-    adamw_update_vec(param.mlp.down.weight, grad.mlp.down.weight, m.mlp.down.weight, v.mlp.down.weight, t, lr, beta1,
-                     beta2, eps, weight_decay);
-
-    if (!param.attention.q_proj.bias.empty()) {
-        adamw_update_vec(param.attention.q_proj.bias, grad.attention.q_proj.bias, m.attention.q_proj.bias,
-                         v.attention.q_proj.bias, t, lr, beta1, beta2, eps, weight_decay);
-        adamw_update_vec(param.attention.k_proj.bias, grad.attention.k_proj.bias, m.attention.k_proj.bias,
-                         v.attention.k_proj.bias, t, lr, beta1, beta2, eps, weight_decay);
-        adamw_update_vec(param.attention.v_proj.bias, grad.attention.v_proj.bias, m.attention.v_proj.bias,
-                         v.attention.v_proj.bias, t, lr, beta1, beta2, eps, weight_decay);
-        adamw_update_vec(param.attention.o_proj.bias, grad.attention.o_proj.bias, m.attention.o_proj.bias,
-                         v.attention.o_proj.bias, t, lr, beta1, beta2, eps, weight_decay);
-        adamw_update_vec(param.mlp.gate.bias, grad.mlp.gate.bias, m.mlp.gate.bias, v.mlp.gate.bias, t, lr, beta1,
-                         beta2, eps, weight_decay);
-        adamw_update_vec(param.mlp.up.bias, grad.mlp.up.bias, m.mlp.up.bias, v.mlp.up.bias, t, lr, beta1, beta2, eps,
-                         weight_decay);
-        adamw_update_vec(param.mlp.down.bias, grad.mlp.down.bias, m.mlp.down.bias, v.mlp.down.bias, t, lr, beta1,
-                         beta2, eps, weight_decay);
-    }
-}
-
-void adamw_update_model(model::ModelWeights& param, const model::ModelWeights& grad, model::ModelWeights& m,
-                        model::ModelWeights& v, size_t t, float lr, float beta1, float beta2, float eps,
-                        float weight_decay) {
+void adamw_step(model::ModelWeights& param, const model::ModelWeights& grad, model::ModelWeights& m,
+                model::ModelWeights& v, size_t t, float lr, float beta1, float beta2, float eps, float weight_decay) {
     for (size_t i = 0; i < param.layers.size(); ++i) {
         adamw_update_decoder_layer(param.layers[i], grad.layers[i], m.layers[i], v.layers[i], t, lr, beta1, beta2, eps,
                                    weight_decay);
     }
     adamw_update_vec(param.token_embedding, grad.token_embedding, m.token_embedding, v.token_embedding, t, lr, beta1,
                      beta2, eps, weight_decay);
-    adamw_update_vec(param.output_projection, grad.output_projection, m.output_projection, v.output_projection, t, lr, beta1, beta2, eps, weight_decay);
+    adamw_update_vec(param.output_projection, grad.output_projection, m.output_projection, v.output_projection, t, lr,
+                     beta1, beta2, eps, weight_decay);
 }
 
 } // namespace train

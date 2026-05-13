@@ -1,10 +1,15 @@
-#include "model/kv_cache.h"
+#include "model/cache.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <stdexcept>
 
 namespace model {
+
+// ============================================================
+// KV cache
+// ============================================================
 
 // Construction / lifecycle -----------------------------------------------------
 
@@ -128,6 +133,35 @@ size_t KVCache::ceil_div(size_t a, size_t b) {
 size_t KVCache::idx4(size_t layer, size_t hkv, size_t pos, size_t d) const {
     const size_t padded_seq_len = pages_per_layer_ * cfg_.page_size;
     return layer * elems_per_page_ + (hkv * padded_seq_len + pos) * cfg_.head_dim + d;
+}
+
+// ============================================================
+// RoPE cache
+// ============================================================
+
+RopeCache::RopeCache(float rope_base, size_t head_dim, size_t rope_dim)
+    : rope_base_(rope_base), head_dim_(head_dim), rope_dim_(rope_dim) {
+    const size_t rotary_dim = (rope_dim_ == 0) ? head_dim_ : std::min(rope_dim_, head_dim_);
+    rot_ = rotary_dim - (rotary_dim % 2);
+    half_ = rot_ / 2;
+}
+
+void RopeCache::ensure(size_t max_pos_exclusive) {
+    if (half_ == 0 || max_pos_exclusive <= max_pos_cached_) {
+        return;
+    }
+    const size_t old = max_pos_cached_;
+    max_pos_cached_ = max_pos_exclusive;
+    cos_.resize(max_pos_cached_ * half_);
+    sin_.resize(max_pos_cached_ * half_);
+    for (size_t p = old; p < max_pos_cached_; ++p) {
+        for (size_t i = 0; i < half_; ++i) {
+            const float inv_freq = std::pow(rope_base_, -static_cast<float>(i) / static_cast<float>(half_));
+            const float theta = static_cast<float>(p) * inv_freq;
+            cos_[p * half_ + i] = std::cos(theta);
+            sin_[p * half_ + i] = std::sin(theta);
+        }
+    }
 }
 
 } // namespace model

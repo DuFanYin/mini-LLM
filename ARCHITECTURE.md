@@ -89,7 +89,7 @@ Public runtime methods:
 - `backward(tapes, grad_hidden_out, grad, grad_hidden_in)` runs decoder-stack backward.
 - `configure_cache(max_seq_len)` preallocates inference cache storage.
 
-Executor-only types such as `ForwardInput`, `BlockForwardTape`, and `ModelForwardTape` stay inside the model layer. KV-cache types (`KVCache`, `KVCacheConfig`, `CacheView`) live next to the cache implementation in `model/kv_cache.h`. Apps, task code, and train code should call `MiniLlm` methods instead of constructing executor inputs or touching the cache directly.
+Executor-only types such as `ForwardInput`, `BlockForwardTape`, and `ModelForwardTape` stay inside the model layer. Runtime cache types (`KVCache`, `KVCacheConfig`, `CacheView`, `RopeCache`) live next to the cache implementation in `model/cache.h`. Apps, task code, and train code should call `MiniLlm` methods instead of constructing executor inputs or touching the cache directly.
 
 ## Forward Execution
 

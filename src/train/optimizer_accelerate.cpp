@@ -15,6 +15,12 @@
 
 namespace train {
 
+// ------------------------------------------------------------
+// File-local helpers: per-tensor / per-layer primitives composed
+// into the public per-model entry points further below.
+// ------------------------------------------------------------
+namespace {
+
 model::DecoderLayerWeights clone_decoder_layer_weights(const model::DecoderLayerWeights& ref) {
     model::DecoderLayerWeights g;
     g.norm1.weight.assign(ref.norm1.weight.size(), 0.0f);
@@ -42,43 +48,23 @@ model::DecoderLayerWeights clone_decoder_layer_weights(const model::DecoderLayer
     return g;
 }
 
-model::ModelWeights clone_model(const model::ModelWeights& ref) {
-    model::ModelWeights g;
-    g.vocab_size = ref.vocab_size;
-    g.layers.reserve(ref.layers.size());
-    for (const auto& layer : ref.layers) {
-        g.layers.push_back(clone_decoder_layer_weights(layer));
-    }
-    g.token_embedding.assign(ref.token_embedding.size(), 0.0f);
-    g.output_projection.assign(ref.output_projection.size(), 0.0f);
-    return g;
-}
-
-void clear(model::LinearWeights& lg) {
+void clear_linear(model::LinearWeights& lg) {
     std::fill(lg.weight.begin(), lg.weight.end(), 0.0f);
     if (!lg.bias.empty()) {
         std::fill(lg.bias.begin(), lg.bias.end(), 0.0f);
     }
 }
 
-void clear(model::DecoderLayerWeights& g) {
+void clear_decoder_layer(model::DecoderLayerWeights& g) {
     std::fill(g.norm1.weight.begin(), g.norm1.weight.end(), 0.0f);
     std::fill(g.norm2.weight.begin(), g.norm2.weight.end(), 0.0f);
-    clear(g.attention.q_proj);
-    clear(g.attention.k_proj);
-    clear(g.attention.v_proj);
-    clear(g.attention.o_proj);
-    clear(g.mlp.gate);
-    clear(g.mlp.up);
-    clear(g.mlp.down);
-}
-
-void clear(model::ModelWeights& g) {
-    for (auto& layer : g.layers) {
-        clear(layer);
-    }
-    std::fill(g.token_embedding.begin(), g.token_embedding.end(), 0.0f);
-    std::fill(g.output_projection.begin(), g.output_projection.end(), 0.0f);
+    clear_linear(g.attention.q_proj);
+    clear_linear(g.attention.k_proj);
+    clear_linear(g.attention.v_proj);
+    clear_linear(g.attention.o_proj);
+    clear_linear(g.mlp.gate);
+    clear_linear(g.mlp.up);
+    clear_linear(g.mlp.down);
 }
 
 void vector_add_sq_sum(const std::vector<float>& v, double* acc) {
@@ -122,43 +108,6 @@ void vector_scale(std::vector<float>& v, float scale) {
         return;
     }
     vDSP_vsmul(v.data(), 1, &scale, v.data(), 1, v.size());
-}
-
-void clip_grad(model::ModelWeights& g, float max_norm) {
-    if (max_norm <= 0.0f) {
-        return;
-    }
-    const double sq = grad_l2_sq(g);
-    if (sq <= 0.0) {
-        return;
-    }
-    const double n = std::sqrt(sq);
-    if (n <= static_cast<double>(max_norm)) {
-        return;
-    }
-    const float scale = static_cast<float>(max_norm / n);
-    for (auto& layer : g.layers) {
-        vector_scale(layer.norm1.weight, scale);
-        vector_scale(layer.norm2.weight, scale);
-        vector_scale(layer.attention.q_proj.weight, scale);
-        vector_scale(layer.attention.k_proj.weight, scale);
-        vector_scale(layer.attention.v_proj.weight, scale);
-        vector_scale(layer.attention.o_proj.weight, scale);
-        vector_scale(layer.mlp.gate.weight, scale);
-        vector_scale(layer.mlp.up.weight, scale);
-        vector_scale(layer.mlp.down.weight, scale);
-        if (!layer.attention.q_proj.bias.empty()) {
-            vector_scale(layer.attention.q_proj.bias, scale);
-            vector_scale(layer.attention.k_proj.bias, scale);
-            vector_scale(layer.attention.v_proj.bias, scale);
-            vector_scale(layer.attention.o_proj.bias, scale);
-            vector_scale(layer.mlp.gate.bias, scale);
-            vector_scale(layer.mlp.up.bias, scale);
-            vector_scale(layer.mlp.down.bias, scale);
-        }
-    }
-    vector_scale(g.token_embedding, scale);
-    vector_scale(g.output_projection, scale);
 }
 
 // AdamW is memory-bandwidth bound: each element does a fused FMA + sqrt + div
@@ -238,16 +187,79 @@ void adamw_update_decoder_layer(model::DecoderLayerWeights& param, const model::
     }
 }
 
-void adamw_update_model(model::ModelWeights& param, const model::ModelWeights& grad, model::ModelWeights& m,
-                        model::ModelWeights& v, size_t t, float lr, float beta1, float beta2, float eps,
-                        float weight_decay) {
+} // anonymous namespace
+
+// ------------------------------------------------------------
+// Public API (declared in train/train.h).
+// ------------------------------------------------------------
+
+model::ModelWeights zeros_like(const model::ModelWeights& ref) {
+    model::ModelWeights g;
+    g.vocab_size = ref.vocab_size;
+    g.layers.reserve(ref.layers.size());
+    for (const auto& layer : ref.layers) {
+        g.layers.push_back(clone_decoder_layer_weights(layer));
+    }
+    g.token_embedding.assign(ref.token_embedding.size(), 0.0f);
+    g.output_projection.assign(ref.output_projection.size(), 0.0f);
+    return g;
+}
+
+void zero(model::ModelWeights& g) {
+    for (auto& layer : g.layers) {
+        clear_decoder_layer(layer);
+    }
+    std::fill(g.token_embedding.begin(), g.token_embedding.end(), 0.0f);
+    std::fill(g.output_projection.begin(), g.output_projection.end(), 0.0f);
+}
+
+void clip_grad(model::ModelWeights& g, float max_norm) {
+    if (max_norm <= 0.0f) {
+        return;
+    }
+    const double sq = grad_l2_sq(g);
+    if (sq <= 0.0) {
+        return;
+    }
+    const double n = std::sqrt(sq);
+    if (n <= static_cast<double>(max_norm)) {
+        return;
+    }
+    const float scale = static_cast<float>(max_norm / n);
+    for (auto& layer : g.layers) {
+        vector_scale(layer.norm1.weight, scale);
+        vector_scale(layer.norm2.weight, scale);
+        vector_scale(layer.attention.q_proj.weight, scale);
+        vector_scale(layer.attention.k_proj.weight, scale);
+        vector_scale(layer.attention.v_proj.weight, scale);
+        vector_scale(layer.attention.o_proj.weight, scale);
+        vector_scale(layer.mlp.gate.weight, scale);
+        vector_scale(layer.mlp.up.weight, scale);
+        vector_scale(layer.mlp.down.weight, scale);
+        if (!layer.attention.q_proj.bias.empty()) {
+            vector_scale(layer.attention.q_proj.bias, scale);
+            vector_scale(layer.attention.k_proj.bias, scale);
+            vector_scale(layer.attention.v_proj.bias, scale);
+            vector_scale(layer.attention.o_proj.bias, scale);
+            vector_scale(layer.mlp.gate.bias, scale);
+            vector_scale(layer.mlp.up.bias, scale);
+            vector_scale(layer.mlp.down.bias, scale);
+        }
+    }
+    vector_scale(g.token_embedding, scale);
+    vector_scale(g.output_projection, scale);
+}
+
+void adamw_step(model::ModelWeights& param, const model::ModelWeights& grad, model::ModelWeights& m,
+                model::ModelWeights& v, size_t t, float lr, float beta1, float beta2, float eps, float weight_decay) {
     for (size_t i = 0; i < param.layers.size(); ++i) {
         adamw_update_decoder_layer(param.layers[i], grad.layers[i], m.layers[i], v.layers[i], t, lr, beta1, beta2, eps,
                                    weight_decay);
     }
     adamw_update_vec(param.token_embedding, grad.token_embedding, m.token_embedding, v.token_embedding, t, lr, beta1,
                      beta2, eps, weight_decay);
-    adamw_update_vec(param.output_projection, grad.output_projection, m.output_projection, v.output_projection, t, lr, beta1, beta2, eps, weight_decay);
+    adamw_update_vec(param.output_projection, grad.output_projection, m.output_projection, v.output_projection, t, lr,
+                     beta1, beta2, eps, weight_decay);
 }
 
 } // namespace train

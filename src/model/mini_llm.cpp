@@ -9,6 +9,7 @@
 #include <utility>
 
 namespace model {
+
 namespace {
 
 ModelConfig default_train_config() {
@@ -214,7 +215,7 @@ void MiniLlm::prefill(const std::vector<uint32_t>& token_ids, float* hidden_out)
     in.use_cache = true;
     in.causal = true;
     in.is_prefill = true;
-    engine::embed_token_ids_into(token_ids, weights().token_embedding, d_model(), in.hidden_states);
+    engine::embed_tokens(token_ids, weights().token_embedding, d_model(), in.hidden_states);
 
     model::forward_model(config_, layer_weights_, rope_q_, rope_k_, in, cache_.get(), hidden_out, nullptr);
 }
@@ -228,7 +229,7 @@ void MiniLlm::decode(uint32_t token_id, float* hidden_out) {
     in.causal = true;
     in.is_decode = true;
     const std::vector<uint32_t> token_ids{token_id};
-    engine::embed_token_ids_into(token_ids, weights().token_embedding, d_model(), in.hidden_states);
+    engine::embed_tokens(token_ids, weights().token_embedding, d_model(), in.hidden_states);
 
     model::forward_model(config_, layer_weights_, rope_q_, rope_k_, in, cache_.get(), hidden_out, nullptr);
 }
@@ -241,7 +242,7 @@ void MiniLlm::forward_train(const std::vector<uint32_t>& token_ids,
     in.use_cache = false;
     in.causal = true;
     in.is_prefill = true;
-    engine::embed_token_ids_into(token_ids, weights().token_embedding, d_model(), in.hidden_states);
+    engine::embed_tokens(token_ids, weights().token_embedding, d_model(), in.hidden_states);
 
     layer_tapes.resize(num_layers());
     model::forward_model(config_, layer_weights_, rope_q_, rope_k_, in, nullptr, hidden_out, &layer_tapes);

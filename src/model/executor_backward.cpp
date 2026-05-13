@@ -114,7 +114,7 @@ void backward_decoder_mlp(const std::vector<float>& grad_layer_out, const BlockF
 
 void backward_decoder_attention(const std::vector<float>& grad_post_attn, const BlockForwardTape& tape,
                                 const ModelConfig& config, const DecoderLayerWeights& weights,
-                                DecoderLayerWeights& layer_grad, kernel::RopeCache& rope_k, size_t seq_len,
+                                DecoderLayerWeights& layer_grad, RopeCache& rope_k, size_t seq_len,
                                 size_t q_proj_dim, size_t kv_proj_dim, size_t total_kv_len, size_t past_len,
                                 BackwardWorkspace& ws) {
     const size_t row_q = seq_len * q_proj_dim;
@@ -174,19 +174,20 @@ void backward_decoder_attention(const std::vector<float>& grad_post_attn, const 
 
     const kernel::RopeParams rope_k_params{seq_len, config.num_kv_heads, config.head_dim};
     // apply_rope_backward clears grad_k_pre_rope before writing rotary dims.
-    kernel::apply_rope_backward(ws.grad_k_rope_current.data(), ws.grad_k_pre_rope.data(), tape.positions.data(), rope_k,
-                                 rope_k_params);
+    kernel::apply_rope_backward(ws.grad_k_rope_current.data(), ws.grad_k_pre_rope.data(), tape.positions.data(),
+                                rope_k.cos_data(), rope_k.sin_data(), rope_k.rot_dim(), rope_k_params);
 }
 
 void backward_decoder_qkv_norm(const std::vector<float>& grad_post_attn, const BlockForwardTape& tape,
                                const ModelConfig& config, const DecoderLayerWeights& weights,
-                               DecoderLayerWeights& layer_grad, kernel::RopeCache& rope_q, size_t seq_len,
+                               DecoderLayerWeights& layer_grad, RopeCache& rope_q, size_t seq_len,
                                size_t q_proj_dim, size_t kv_proj_dim, BackwardWorkspace& ws,
                                std::vector<float>& grad_layer_in) {
     const kernel::RopeParams rope_q_params{seq_len, config.num_heads, config.head_dim};
     // grad_context is dead after attention backward; reuse for d(loss)/d(q_pre_rope).
     float* grad_q_pre_rope = ws.grad_context.data();
-    kernel::apply_rope_backward(ws.grad_q.data(), grad_q_pre_rope, tape.positions.data(), rope_q, rope_q_params);
+    kernel::apply_rope_backward(ws.grad_q.data(), grad_q_pre_rope, tape.positions.data(), rope_q.cos_data(),
+                                rope_q.sin_data(), rope_q.rot_dim(), rope_q_params);
 
     const kernel::LinearParams q_proj_params{seq_len, config.d_model, q_proj_dim};
     const kernel::LinearParams k_proj_params{seq_len, config.d_model, kv_proj_dim};
@@ -228,8 +229,8 @@ void backward_model(const ModelConfig& config, const ModelWeights& weights,
         return;
     }
 
-    kernel::RopeCache rope_q(config.rope_base, config.head_dim, config.rope_dim);
-    kernel::RopeCache rope_k(config.rope_base, config.head_dim, config.rope_dim);
+    RopeCache rope_q(config.rope_base, config.head_dim, config.rope_dim);
+    RopeCache rope_k(config.rope_base, config.head_dim, config.rope_dim);
     size_t rope_max_pos = 0;
     for (const auto& tape : tapes) {
         for (size_t p : tape.positions) {
