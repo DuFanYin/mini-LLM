@@ -1,14 +1,14 @@
 #include "kernel/kernel.h"
 
-#include "kernel/cuda_util.cuh"
+#include "kernel/cuda/device.cuh"
 
 #include <cmath>
 
-// CUDA backend for the element-wise / softmax core kernels declared in kernel.h.
-// Selected by the configure script for MINI_LLM_KERNEL_BACKEND=cuda. Mirrors the
-// scalar core.cpp math exactly; each public call uploads inputs, launches a
-// handwritten kernel, and copies the result back (matching the host-pointer
-// kernel boundary). silu / silu_derivative remain host scalar helpers.
+// CUDA backend for the element-wise / softmax / optimizer-leaf kernels declared
+// in kernel.h. Selected by the configure script for MINI_LLM_KERNEL_BACKEND=cuda.
+// Mirrors the scalar core.cpp math exactly; each public call uploads inputs,
+// launches a handwritten kernel, and copies the result back (matching the
+// host-pointer kernel boundary). Host silu / silu_derivative live in common/.
 
 namespace kernel {
 
@@ -117,14 +117,66 @@ __global__ void softmax_backward_kernel(const float* prob, const float* grad_pro
 
 int blocks_for(size_t n) { return static_cast<int>((n + kBlock - 1) / kBlock); }
 
-} // namespace
+// --- optimizer-leaf kernels ---
 
-float silu(float x) { return x / (1.0f + std::exp(-x)); }
-
-float silu_derivative(float x) {
-    const float s = 1.0f / (1.0f + std::exp(-x));
-    return s + x * s * (1.0f - s);
+__global__ void adamw_kernel(float* param, const float* grad, float* m, float* v, int n, float lr, float beta1,
+                             float beta2, float one_minus_beta1, float one_minus_beta2, float inv_bias_c1,
+                             float inv_bias_c2, float eps, float weight_decay) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) {
+        return;
+    }
+    const float gi = grad[i];
+    const float mi = beta1 * m[i] + one_minus_beta1 * gi;
+    const float vi = beta2 * v[i] + one_minus_beta2 * gi * gi;
+    m[i] = mi;
+    v[i] = vi;
+    const float m_hat = mi * inv_bias_c1;
+    const float v_hat = vi * inv_bias_c2;
+    const float pi = param[i];
+    const float denom = sqrtf(v_hat) + eps;
+    param[i] = pi - lr * (m_hat / denom + weight_decay * pi);
 }
+
+__global__ void sumsq_kernel(const float* x, int n, double* acc) {
+    __shared__ double sdata[kBlock];
+    const int tid = threadIdx.x;
+    double s = 0.0;
+    for (int i = blockIdx.x * blockDim.x + tid; i < n; i += blockDim.x * gridDim.x) {
+        const double xi = static_cast<double>(x[i]);
+        s += xi * xi;
+    }
+    sdata[tid] = s;
+    __syncthreads();
+    for (int st = blockDim.x / 2; st > 0; st >>= 1) {
+        if (tid < st) {
+            sdata[tid] += sdata[tid + st];
+        }
+        __syncthreads();
+    }
+    if (tid == 0) {
+        atomicAdd(acc, sdata[0]);
+    }
+}
+
+__global__ void scale_kernel(float* x, int n, float s) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        x[i] *= s;
+    }
+}
+
+// Persistent single-double device accumulator for sum_squares (process lifetime).
+double* sumsq_accumulator() {
+    static double* ptr = [] {
+        double* p = nullptr;
+        CUDA_CHECK(cudaMalloc(&p, sizeof(double)));
+        return p;
+    }();
+    return ptr;
+}
+
+} // namespace
 
 void add(const float* a, const float* b, float* y, const AddParams& p) {
     const size_t n = p.size;
@@ -198,6 +250,57 @@ void silu_mul_backward(const float* gate, const float* up, const float* grad_hid
     cuda::sync();
     cuda::download(grad_gate, d_grad_gate, n);
     cuda::download(grad_up, d_grad_up, n);
+}
+
+void adamw_update(float* param, const float* grad, float* m, float* v, size_t n, const AdamwParams& p) {
+    if (n == 0) {
+        return;
+    }
+    const float one_minus_beta1 = 1.0f - p.beta1;
+    const float one_minus_beta2 = 1.0f - p.beta2;
+    const float inv_bias_c1 = 1.0f / (1.0f - std::pow(p.beta1, static_cast<float>(p.step)));
+    const float inv_bias_c2 = 1.0f / (1.0f - std::pow(p.beta2, static_cast<float>(p.step)));
+
+    static DeviceBuffer dParam, dGrad, dM, dV;
+    float* d_param = cuda::upload(dParam, param, n);
+    const float* d_grad = cuda::upload(dGrad, grad, n);
+    float* d_m = cuda::upload(dM, m, n);
+    float* d_v = cuda::upload(dV, v, n);
+
+    adamw_kernel<<<blocks_for(n), kBlock>>>(d_param, d_grad, d_m, d_v, static_cast<int>(n), p.lr, p.beta1, p.beta2,
+                                            one_minus_beta1, one_minus_beta2, inv_bias_c1, inv_bias_c2, p.eps,
+                                            p.weight_decay);
+    cuda::sync();
+    cuda::download(param, d_param, n);
+    cuda::download(m, d_m, n);
+    cuda::download(v, d_v, n);
+}
+
+double sum_squares(const float* x, size_t n) {
+    if (n == 0) {
+        return 0.0;
+    }
+    double* acc = sumsq_accumulator();
+    CUDA_CHECK(cudaMemset(acc, 0, sizeof(double)));
+    static DeviceBuffer dX;
+    const float* d_x = cuda::upload(dX, x, n);
+    const int blocks = (blocks_for(n) < 256) ? blocks_for(n) : 256;
+    sumsq_kernel<<<blocks, kBlock>>>(d_x, static_cast<int>(n), acc);
+    cuda::sync();
+    double host = 0.0;
+    CUDA_CHECK(cudaMemcpy(&host, acc, sizeof(double), cudaMemcpyDeviceToHost));
+    return host;
+}
+
+void scale(float* x, size_t n, float s) {
+    if (n == 0) {
+        return;
+    }
+    static DeviceBuffer dX;
+    float* d_x = cuda::upload(dX, x, n);
+    scale_kernel<<<blocks_for(n), kBlock>>>(d_x, static_cast<int>(n), s);
+    cuda::sync();
+    cuda::download(x, d_x, n);
 }
 
 } // namespace kernel

@@ -1,6 +1,6 @@
 #include "kernel/kernel.h"
 
-#include "kernel/cuda_util.cuh"
+#include "kernel/cuda/device.cuh"
 
 #include <cmath>
 

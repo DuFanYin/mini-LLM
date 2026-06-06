@@ -20,7 +20,6 @@ foreach(_var IN ITEMS
     MINI_LLM_GEMM_DRIVER_SRC
     MINI_LLM_ATTENTION_SRC
     MINI_LLM_CORE_SRC
-    MINI_LLM_OPTIMIZER_SRC
     MINI_LLM_USE_CUDA)
   if(NOT DEFINED ${_var})
     message(FATAL_ERROR
@@ -48,10 +47,12 @@ add_library(model STATIC
   src/model/executor_backward.cpp
   src/model/cache.cpp
   src/engine/io.cpp
+  src/engine/embedding.cpp
   ${MINI_LLM_CORE_SRC}
   ${MINI_LLM_GEMM_DRIVER_SRC}
   ${MINI_LLM_ATTENTION_SRC}
-  src/kernel/norm_rope.cpp
+  src/kernel/scalar/norm_rope.cpp
+  src/kernel/common/silu.cpp
 )
 
 target_include_directories(model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -61,9 +62,8 @@ if(MINI_LLM_USE_CUDA)
 endif()
 
 add_library(language_model STATIC
-  src/engine/embedding.cpp
   src/engine/decode.cpp
-  ${MINI_LLM_OPTIMIZER_SRC}
+  src/train/optimizer.cpp
   src/train/loss.cpp
   src/train/step.cpp
   src/task/sample_data.cpp

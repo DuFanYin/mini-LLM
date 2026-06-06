@@ -1,6 +1,6 @@
 #include "kernel/kernel.h"
 
-#include "kernel/cuda_util.cuh"
+#include "kernel/cuda/device.cuh"
 
 // CUDA backend for the GEMM-family kernels (handwritten, no cuBLAS).
 //

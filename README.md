@@ -42,7 +42,7 @@ ctest --test-dir build --output-on-failure
 `scripts/configure.sh` 会给 CMake 注入当前 backend 需要的源文件：
 
 - `scalar`：全部 kernel / optimizer 跑在 CPU 上（手写 scalar）。
-- `cuda`：GEMM 与 attention 跑在 GPU 上（手写 CUDA kernel）；norm、rope、core 逐元素 op 以及 optimizer 仍走 scalar 路径。
+- `cuda`：GEMM、attention、core 逐元素/softmax kernel 以及 optimizer 的逐张量数学（AdamW、梯度范数、scale）跑在 GPU 上（手写 CUDA kernel）；norm、rope 仍走 scalar 路径。
 
 ## 训练
 
@@ -233,12 +233,11 @@ Which-Span 任务层。负责数据采样、任务布局解析、答案位置选
 
 核心文件：
 
-- `kernel.h`：kernel 参数结构和函数声明。
-- `cuda_util.cuh`：CUDA backend 的设备端公共设施（错误检查、可复用 device buffer）。
-- `gemm.cpp` / `gemm_cuda.cu`：矩阵乘（scalar / 手写 CUDA）。
-- `attention.cpp` / `attention_cuda.cu`：GQA attention forward / backward（scalar / 手写 CUDA）。
-- `core.cpp`：基础逐元素和 softmax 类 kernel（始终走 CPU）。
-- `norm_rope.cpp`：RMSNorm forward / backward，RoPE forward / backward。
+- `kernel.h`：kernel 参数结构和函数声明（所有 backend 的公共 seam）。
+- `common/silu.cpp`：与设备无关的标量 helper（silu / silu_derivative），始终编译。
+- `scalar/`：CPU 实现。`gemm.cpp`、`attention.cpp`、`core.cpp`（逐元素 / softmax / optimizer 逐张量数学），以及始终走 CPU 的 `norm_rope.cpp`（RMSNorm / RoPE forward / backward）。
+- `cuda/`：手写 CUDA 实现。`device.cuh`（错误检查、可复用 device buffer）、`gemm.cu`、`attention.cu`、`core.cu`。
+- backend 选择由 `scripts/configure.sh` 把 `scalar/` 或 `cuda/` 对应的源文件喂给 CMake；两者实现同一组 `kernel.h` 符号。
 
 ## 当前依赖方向
 

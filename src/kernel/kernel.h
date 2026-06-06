@@ -84,5 +84,23 @@ void apply_rope_backward(const float* grad_out, float* grad_in, const size_t* po
 void rms_norm_backward(const float* x, const float* weight, float eps, const float* dy, float* dx, float* grad_weight,
                        const RmsNormParams& p);
 
+// Optimizer raw-tensor math (operates on flat parameter storage; the train layer
+// owns the ModelWeights iteration that composes these per tensor).
+struct AdamwParams {
+    size_t step = 0; // 1-based optimizer step index
+    float lr = 0.0f;
+    float beta1 = 0.0f;
+    float beta2 = 0.0f;
+    float eps = 0.0f;
+    float weight_decay = 0.0f;
+};
+
+// In-place AdamW update of `param` (and moments `m`, `v`) from `grad`.
+void adamw_update(float* param, const float* grad, float* m, float* v, size_t n, const AdamwParams& p);
+// Sum of squares of `x[0..n)` accumulated in double precision.
+[[nodiscard]] double sum_squares(const float* x, size_t n);
+// In-place scale: x[i] *= s.
+void scale(float* x, size_t n, float s);
+
 } // namespace kernel
 
