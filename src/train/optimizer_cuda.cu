@@ -1,25 +1,91 @@
-// Accelerate variant of the AdamW optimizer + grad-norm utilities. Selected by
-// the configure script only for MINI_LLM_KERNEL_BACKEND=accelerate. The public
-// ABI matches src/train/optimizer.cpp exactly; we just swap the per-tensor
-// primitives for vDSP / vForce calls so the bandwidth-bound passes hit closer
-// to the memory-system limit.
-
 #include "train/train.h"
 
-#define ACCELERATE_NEW_LAPACK
-#include <Accelerate/Accelerate.h>
+#include "kernel/cuda_util.cuh"
 
 #include <algorithm>
 #include <cmath>
 #include <vector>
 
+// CUDA backend for the optimizer math declared in train/train.h. Selected by the
+// configure script for MINI_LLM_KERNEL_BACKEND=cuda. The structural code (buffer
+// allocation, layer iteration) stays on the host exactly as in optimizer.cpp;
+// only the per-tensor math leaves (sum-of-squares, scale, AdamW update) run on
+// the GPU. Each leaf uploads the tensor(s), launches a kernel, and copies back.
+
 namespace train {
 
-// ------------------------------------------------------------
-// File-local helpers: per-tensor / per-layer primitives composed
-// into the public per-model entry points further below.
-// ------------------------------------------------------------
 namespace {
+
+using kernel::cuda::DeviceBuffer;
+
+constexpr int kBlock = 256;
+
+// ------------------------------------------------------------
+// Device kernels.
+// ------------------------------------------------------------
+
+__global__ void sumsq_kernel(const float* x, int n, double* acc) {
+    __shared__ double sdata[kBlock];
+    const int tid = threadIdx.x;
+    double s = 0.0;
+    for (int i = blockIdx.x * blockDim.x + tid; i < n; i += blockDim.x * gridDim.x) {
+        const double xi = static_cast<double>(x[i]);
+        s += xi * xi;
+    }
+    sdata[tid] = s;
+    __syncthreads();
+    for (int st = blockDim.x / 2; st > 0; st >>= 1) {
+        if (tid < st) {
+            sdata[tid] += sdata[tid + st];
+        }
+        __syncthreads();
+    }
+    if (tid == 0) {
+        atomicAdd(acc, sdata[0]);
+    }
+}
+
+__global__ void scale_kernel(float* x, int n, float scale) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        x[i] *= scale;
+    }
+}
+
+__global__ void adamw_kernel(float* param, const float* grad, float* m, float* v, int n, float lr, float beta1,
+                             float beta2, float one_minus_beta1, float one_minus_beta2, float inv_bias_c1,
+                             float inv_bias_c2, float eps, float weight_decay) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) {
+        return;
+    }
+    const float gi = grad[i];
+    const float mi = beta1 * m[i] + one_minus_beta1 * gi;
+    const float vi = beta2 * v[i] + one_minus_beta2 * gi * gi;
+    m[i] = mi;
+    v[i] = vi;
+    const float m_hat = mi * inv_bias_c1;
+    const float v_hat = vi * inv_bias_c2;
+    const float pi = param[i];
+    const float denom = sqrtf(v_hat) + eps;
+    param[i] = pi - lr * (m_hat / denom + weight_decay * pi);
+}
+
+int blocks_for(size_t n) { return static_cast<int>((n + kBlock - 1) / kBlock); }
+
+// Single persistent device accumulator for grad_l2_sq (process lifetime).
+double* sumsq_accumulator() {
+    static double* ptr = [] {
+        double* p = nullptr;
+        CUDA_CHECK(cudaMalloc(&p, sizeof(double)));
+        return p;
+    }();
+    return ptr;
+}
+
+// ------------------------------------------------------------
+// Structural host helpers (identical to the scalar optimizer).
+// ------------------------------------------------------------
 
 model::DecoderLayerWeights clone_decoder_layer_weights(const model::DecoderLayerWeights& ref) {
     model::DecoderLayerWeights g;
@@ -67,54 +133,68 @@ void clear_decoder_layer(model::DecoderLayerWeights& g) {
     clear_linear(g.mlp.down);
 }
 
-void vector_add_sq_sum(const std::vector<float>& v, double* acc) {
-    if (v.empty()) {
+// ------------------------------------------------------------
+// CUDA math leaves.
+// ------------------------------------------------------------
+
+// Upload `v` and accumulate sum(v[i]^2) into the device accumulator `d_acc`.
+void accumulate_sumsq(const std::vector<float>& v, DeviceBuffer& buf, double* d_acc) {
+    const size_t n = v.size();
+    if (n == 0) {
         return;
     }
-    float sum_sq = 0.0f;
-    vDSP_svesq(v.data(), 1, &sum_sq, v.size());
-    *acc += static_cast<double>(sum_sq);
+    const float* d_x = kernel::cuda::upload(buf, v.data(), n);
+    const int blocks = std::min(blocks_for(n), 256);
+    sumsq_kernel<<<blocks, kBlock>>>(d_x, static_cast<int>(n), d_acc);
 }
 
 double grad_l2_sq(const model::ModelWeights& g) {
-    double s = 0.0;
+    double* acc = sumsq_accumulator();
+    CUDA_CHECK(cudaMemset(acc, 0, sizeof(double)));
+    static DeviceBuffer buf;
+
+    auto add = [&](const std::vector<float>& v) { accumulate_sumsq(v, buf, acc); };
     for (const auto& layer : g.layers) {
-        vector_add_sq_sum(layer.norm1.weight, &s);
-        vector_add_sq_sum(layer.norm2.weight, &s);
-        vector_add_sq_sum(layer.attention.q_proj.weight, &s);
-        vector_add_sq_sum(layer.attention.k_proj.weight, &s);
-        vector_add_sq_sum(layer.attention.v_proj.weight, &s);
-        vector_add_sq_sum(layer.attention.o_proj.weight, &s);
-        vector_add_sq_sum(layer.mlp.gate.weight, &s);
-        vector_add_sq_sum(layer.mlp.up.weight, &s);
-        vector_add_sq_sum(layer.mlp.down.weight, &s);
+        add(layer.norm1.weight);
+        add(layer.norm2.weight);
+        add(layer.attention.q_proj.weight);
+        add(layer.attention.k_proj.weight);
+        add(layer.attention.v_proj.weight);
+        add(layer.attention.o_proj.weight);
+        add(layer.mlp.gate.weight);
+        add(layer.mlp.up.weight);
+        add(layer.mlp.down.weight);
         if (!layer.attention.q_proj.bias.empty()) {
-            vector_add_sq_sum(layer.attention.q_proj.bias, &s);
-            vector_add_sq_sum(layer.attention.k_proj.bias, &s);
-            vector_add_sq_sum(layer.attention.v_proj.bias, &s);
-            vector_add_sq_sum(layer.attention.o_proj.bias, &s);
-            vector_add_sq_sum(layer.mlp.gate.bias, &s);
-            vector_add_sq_sum(layer.mlp.up.bias, &s);
-            vector_add_sq_sum(layer.mlp.down.bias, &s);
+            add(layer.attention.q_proj.bias);
+            add(layer.attention.k_proj.bias);
+            add(layer.attention.v_proj.bias);
+            add(layer.attention.o_proj.bias);
+            add(layer.mlp.gate.bias);
+            add(layer.mlp.up.bias);
+            add(layer.mlp.down.bias);
         }
     }
-    vector_add_sq_sum(g.token_embedding, &s);
-    vector_add_sq_sum(g.output_projection, &s);
-    return s;
+    add(g.token_embedding);
+    add(g.output_projection);
+
+    kernel::cuda::sync();
+    double host = 0.0;
+    CUDA_CHECK(cudaMemcpy(&host, acc, sizeof(double), cudaMemcpyDeviceToHost));
+    return host;
 }
 
 void vector_scale(std::vector<float>& v, float scale) {
-    if (v.empty()) {
+    const size_t n = v.size();
+    if (n == 0) {
         return;
     }
-    vDSP_vsmul(v.data(), 1, &scale, v.data(), 1, v.size());
+    static DeviceBuffer buf;
+    float* d_x = kernel::cuda::upload(buf, v.data(), n);
+    scale_kernel<<<blocks_for(n), kBlock>>>(d_x, static_cast<int>(n), scale);
+    kernel::cuda::sync();
+    kernel::cuda::download(v.data(), d_x, n);
 }
 
-// AdamW is memory-bandwidth bound: each element does a fused FMA + sqrt + div
-// over 4 streams (param, grad, m, v) with no reuse. Splitting it into a
-// sequence of vDSP calls multiplies the memory traffic by the number of passes
-// and ends up slower than the hand-written single-pass loop. The scalar fused
-// version below is what we ship even on the Accelerate backend.
 void adamw_update_vec(std::vector<float>& param, const std::vector<float>& grad, std::vector<float>& m,
                       std::vector<float>& v, size_t t, float lr, float beta1, float beta2, float eps,
                       float weight_decay) {
@@ -127,23 +207,19 @@ void adamw_update_vec(std::vector<float>& param, const std::vector<float>& grad,
     const float inv_bias_c1 = 1.0f / (1.0f - std::pow(beta1, static_cast<float>(t)));
     const float inv_bias_c2 = 1.0f / (1.0f - std::pow(beta2, static_cast<float>(t)));
 
-    float* p_param = param.data();
-    const float* p_grad = grad.data();
-    float* p_m = m.data();
-    float* p_v = v.data();
+    static DeviceBuffer dParam, dGrad, dM, dV;
+    float* d_param = kernel::cuda::upload(dParam, param.data(), n);
+    const float* d_grad = kernel::cuda::upload(dGrad, grad.data(), n);
+    float* d_m = kernel::cuda::upload(dM, m.data(), n);
+    float* d_v = kernel::cuda::upload(dV, v.data(), n);
 
-    for (size_t i = 0; i < n; ++i) {
-        const float gi = p_grad[i];
-        const float mi = beta1 * p_m[i] + one_minus_beta1 * gi;
-        const float vi = beta2 * p_v[i] + one_minus_beta2 * gi * gi;
-        p_m[i] = mi;
-        p_v[i] = vi;
-        const float m_hat = mi * inv_bias_c1;
-        const float v_hat = vi * inv_bias_c2;
-        const float pi = p_param[i];
-        const float denom = std::sqrt(v_hat) + eps;
-        p_param[i] = pi - lr * (m_hat / denom + weight_decay * pi);
-    }
+    adamw_kernel<<<blocks_for(n), kBlock>>>(d_param, d_grad, d_m, d_v, static_cast<int>(n), lr, beta1, beta2,
+                                            one_minus_beta1, one_minus_beta2, inv_bias_c1, inv_bias_c2, eps,
+                                            weight_decay);
+    kernel::cuda::sync();
+    kernel::cuda::download(param.data(), d_param, n);
+    kernel::cuda::download(m.data(), d_m, n);
+    kernel::cuda::download(v.data(), d_v, n);
 }
 
 void adamw_update_decoder_layer(model::DecoderLayerWeights& param, const model::DecoderLayerWeights& grad,
@@ -187,7 +263,7 @@ void adamw_update_decoder_layer(model::DecoderLayerWeights& param, const model::
     }
 }
 
-} // anonymous namespace
+} // namespace
 
 // ------------------------------------------------------------
 // Public API (declared in train/train.h).

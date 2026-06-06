@@ -20,12 +20,12 @@
 所有命令都从仓库根目录运行。
 
 ```bash
-# 配置并构建。Darwin 默认使用 Apple Accelerate，其他系统默认 scalar。
+# 配置并构建。检测到 nvcc 时默认使用 cuda backend，否则默认 scalar。
 bash scripts/configure.sh
 
 # 显式选择 backend。
 bash scripts/configure.sh scalar
-bash scripts/configure.sh accelerate
+bash scripts/configure.sh cuda
 
 # 运行测试。
 ctest --test-dir build --output-on-failure
@@ -41,8 +41,8 @@ ctest --test-dir build --output-on-failure
 
 `scripts/configure.sh` 会给 CMake 注入当前 backend 需要的源文件：
 
-- `scalar`：手写 scalar kernel / optimizer。
-- `accelerate`：在 macOS 上使用 Apple Accelerate 版本的 GEMM、attention、部分 core kernel 和 optimizer。
+- `scalar`：全部 kernel / optimizer 跑在 CPU 上（手写 scalar）。
+- `cuda`：GEMM 与 attention 跑在 GPU 上（手写 CUDA kernel）；norm、rope、core 逐元素 op 以及 optimizer 仍走 scalar 路径。
 
 ## 训练
 
@@ -201,7 +201,6 @@ Which-Span 任务层。负责数据采样、任务布局解析、答案位置选
 
 - `train_step.cpp`
 - `optimizer.cpp`
-- `optimizer_accelerate.cpp`
 - `loss.cpp`
 - `train.h`
 
@@ -235,9 +234,10 @@ Which-Span 任务层。负责数据采样、任务布局解析、答案位置选
 核心文件：
 
 - `kernel.h`：kernel 参数结构和函数声明。
-- `gemm.cpp` / `gemm_accelerate.cpp`：矩阵乘。
-- `attention.cpp` / `attention_accelerate.cpp`：GQA attention forward / backward。
-- `core.cpp` / `core_accelerate.cpp`：基础逐元素和 softmax 类 kernel。
+- `cuda_util.cuh`：CUDA backend 的设备端公共设施（错误检查、可复用 device buffer）。
+- `gemm.cpp` / `gemm_cuda.cu`：矩阵乘（scalar / 手写 CUDA）。
+- `attention.cpp` / `attention_cuda.cu`：GQA attention forward / backward（scalar / 手写 CUDA）。
+- `core.cpp`：基础逐元素和 softmax 类 kernel（始终走 CPU）。
 - `norm_rope.cpp`：RMSNorm forward / backward，RoPE forward / backward。
 
 ## 当前依赖方向

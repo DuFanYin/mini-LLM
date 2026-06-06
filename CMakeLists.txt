@@ -6,9 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(mini_transformer_warnings INTERFACE)
+# Restrict warning flags to C++ sources so they are not forwarded to nvcc when
+# the CUDA backend mixes .cu sources into the same target.
 target_compile_options(mini_transformer_warnings INTERFACE
-  $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive->
-  $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-Wall -Wextra -Wpedantic>
+  $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:MSVC>>:/W4 /permissive->
+  $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:AppleClang,Clang,GNU>>:-Wall -Wextra -Wpedantic>
 )
 
 # Kernel backend selection lives in scripts/configure.sh, which feeds the
@@ -19,13 +21,26 @@ foreach(_var IN ITEMS
     MINI_LLM_ATTENTION_SRC
     MINI_LLM_CORE_SRC
     MINI_LLM_OPTIMIZER_SRC
-    MINI_LLM_USE_ACCELERATE)
+    MINI_LLM_USE_CUDA)
   if(NOT DEFINED ${_var})
     message(FATAL_ERROR
       "${_var} is not set. Run ./scripts/configure.sh before invoking cmake.")
   endif()
 endforeach()
 message(STATUS "mini-LLM kernel backend: ${MINI_LLM_KERNEL_BACKEND}")
+
+# The cuda backend feeds .cu sources (gemm/attention) into the model library.
+# Enable the CUDA language and pick a sensible default architecture.
+if(MINI_LLM_USE_CUDA)
+  enable_language(CUDA)
+  find_package(CUDAToolkit REQUIRED)
+  set(CMAKE_CUDA_STANDARD 20)
+  set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+  if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES native)
+  endif()
+  message(STATUS "mini-LLM CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+endif()
 
 add_library(model STATIC
   src/model/mini_llm.cpp
@@ -39,11 +54,11 @@ add_library(model STATIC
   src/kernel/norm_rope.cpp
 )
 
-if(MINI_LLM_USE_ACCELERATE)
-  target_link_libraries(model PUBLIC "-framework Accelerate")
-endif()
 target_include_directories(model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(model PUBLIC mini_transformer_warnings)
+if(MINI_LLM_USE_CUDA)
+  target_link_libraries(model PUBLIC CUDA::cudart)
+endif()
 
 add_library(language_model STATIC
   src/engine/embedding.cpp
