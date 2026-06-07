@@ -23,7 +23,7 @@ if(NOT GTest_FOUND)
 endif()
 include(GoogleTest)
 
-add_executable(tests_runner
+set(_tests_runner_srcs
     ops_test.cpp
     io_test.cpp
     data_test.cpp
@@ -31,10 +31,17 @@ add_executable(tests_runner
     loss_test.cpp
     model_test.cpp
 )
+if(MINI_LLM_USE_CUDA)
+    list(APPEND _tests_runner_srcs core_test.cpp)
+endif()
+add_executable(tests_runner ${_tests_runner_srcs})
 target_link_libraries(tests_runner PRIVATE
     language_model
     GTest::gtest_main
     mini_transformer_warnings)
+if(MINI_LLM_USE_CUDA)
+    target_link_libraries(tests_runner PRIVATE core)
+endif()
 set_target_properties(tests_runner PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 

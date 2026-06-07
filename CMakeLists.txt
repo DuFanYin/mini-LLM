@@ -41,6 +41,16 @@ if(MINI_LLM_USE_CUDA)
   message(STATUS "mini-LLM CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 endif()
 
+# Device foundation library (Phase 0). CUDA-only; the scalar build skips it.
+if(MINI_LLM_USE_CUDA)
+  add_library(core STATIC
+    src/core/allocator.cu
+    src/core/tensor.cu
+  )
+  target_include_directories(core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(core PUBLIC CUDA::cudart mini_transformer_warnings)
+endif()
+
 add_library(model STATIC
   src/model/mini_llm.cpp
   src/model/executor_forward.cpp
