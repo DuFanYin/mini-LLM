@@ -1,6 +1,7 @@
 #include "kernel/kernel.h"
 
 #include "kernel/cuda/device.cuh"
+#include "kernel/cuda/launch.h"
 
 #include <cmath>
 
@@ -287,5 +288,57 @@ void gqa_attention_backward(const float* q, const float* k_all, const float* v_a
     cuda::download(grad_k_all, d_gk, total_kv_len * hkv * d_head);
     cuda::download(grad_v_all, d_gv, total_kv_len * hkv * d_head);
 }
+
+namespace {
+
+// Scatter seq_len new rows of K/V from [seq, hkv, hd] into head-major caches
+// [hkv, kv_stride, hd] at position past_len.
+__global__ void kv_append_kernel(const float* k_src, const float* v_src, float* k_cache, float* v_cache, int seq_len,
+                                 int hkv, int hd, int past_len, int kv_stride) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = seq_len * hkv * hd;
+    if (idx >= total) {
+        return;
+    }
+    const int d = idx % hd;
+    const int h = (idx / hd) % hkv;
+    const int si = idx / (hd * hkv);
+    const int src = (si * hkv + h) * hd + d;
+    const int dst = (h * kv_stride + past_len + si) * hd + d;
+    k_cache[dst] = k_src[src];
+    v_cache[dst] = v_src[src];
+}
+
+} // namespace
+
+namespace cuda {
+
+void gqa_attention_forward_device(const float* q, const float* k_all, const float* v_all, const float* mask,
+                                  float* ctx, size_t seq_len, size_t num_heads, size_t num_kv_heads, size_t head_dim,
+                                  size_t past_len, size_t total_kv_len, size_t kv_stride, bool causal) {
+    if (seq_len == 0 || total_kv_len == 0) {
+        return;
+    }
+    const float inv_sqrt_d = 1.0f / std::sqrt(static_cast<float>(head_dim));
+    const size_t shmem = total_kv_len * sizeof(float);
+    forward_kernel<<<static_cast<unsigned int>(seq_len * num_heads), kThreads, shmem>>>(
+        q, k_all, v_all, mask, mask != nullptr, ctx, nullptr, false, static_cast<int>(num_heads),
+        static_cast<int>(num_kv_heads), static_cast<int>(head_dim), static_cast<int>(total_kv_len),
+        static_cast<int>(kv_stride), static_cast<int>(past_len), /*use_cache=*/true, causal, inv_sqrt_d);
+}
+
+void kv_append_device(const float* k_src, const float* v_src, float* k_cache, float* v_cache, size_t seq_len,
+                      size_t num_kv_heads, size_t head_dim, size_t past_len, size_t kv_stride) {
+    const size_t total = seq_len * num_kv_heads * head_dim;
+    if (total == 0) {
+        return;
+    }
+    constexpr int kBlock = 256;
+    kv_append_kernel<<<static_cast<unsigned int>((total + kBlock - 1) / kBlock), kBlock>>>(
+        k_src, v_src, k_cache, v_cache, static_cast<int>(seq_len), static_cast<int>(num_kv_heads),
+        static_cast<int>(head_dim), static_cast<int>(past_len), static_cast<int>(kv_stride));
+}
+
+} // namespace cuda
 
 } // namespace kernel

@@ -68,7 +68,9 @@ add_library(model STATIC
 target_include_directories(model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(model PUBLIC mini_transformer_warnings)
 if(MINI_LLM_USE_CUDA)
-  target_link_libraries(model PUBLIC CUDA::cudart)
+  target_sources(model PRIVATE src/kernel/cuda/norm_rope.cu)
+  target_link_libraries(model PUBLIC CUDA::cudart core)
+  target_compile_definitions(model PUBLIC MINI_LLM_USE_CUDA)
 endif()
 
 add_library(language_model STATIC

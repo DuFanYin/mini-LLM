@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstddef>
 #include <utility>
 #include <vector>
@@ -130,6 +131,42 @@ TEST(KernelSeamTest, GemmNtDeviceMatchesHostReference) {
     dC.copy_to_host(got.data());
     for (std::size_t i = 0; i < M * N; ++i) {
         EXPECT_FLOAT_EQ(got[i], expected[i]) << "at index " << i;
+    }
+}
+
+TEST(KernelSeamTest, RmsNormDeviceMatchesHostReference) {
+    const std::size_t rows = 3, d = 4;
+    const float eps = 1e-5f;
+    const std::vector<float> x = {1.0f, -2.0f, 3.0f, 0.5f,
+                                  4.0f, 4.0f, 4.0f, 4.0f,
+                                  -1.0f, 2.0f, -3.0f, 1.0f};
+    const std::vector<float> weight = {1.0f, 0.5f, 2.0f, 1.5f};
+
+    std::vector<float> expected(rows * d, 0.0f);
+    for (std::size_t r = 0; r < rows; ++r) {
+        float mean_sq = 0.0f;
+        for (std::size_t c = 0; c < d; ++c) {
+            const float v = x[r * d + c];
+            mean_sq += v * v;
+        }
+        mean_sq /= static_cast<float>(d);
+        const float inv = 1.0f / std::sqrt(mean_sq + eps);
+        for (std::size_t c = 0; c < d; ++c) {
+            expected[r * d + c] = x[r * d + c] * inv * weight[c];
+        }
+    }
+
+    core::PoolAllocator alloc;
+    core::Tensor dx({rows, d}, alloc), dw({d}, alloc), dy({rows, d}, alloc);
+    dx.copy_from_host(x.data());
+    dw.copy_from_host(weight.data());
+
+    kernel::cuda::rms_norm_device(dx.data(), dw.data(), eps, dy.data(), rows, d);
+
+    std::vector<float> got(rows * d, 0.0f);
+    dy.copy_to_host(got.data());
+    for (std::size_t i = 0; i < rows * d; ++i) {
+        EXPECT_NEAR(got[i], expected[i], 1e-5f) << "at index " << i;
     }
 }
 
