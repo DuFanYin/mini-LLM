@@ -61,10 +61,17 @@ graphs (Phases 4–5).
 
 Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
-### Phase 0 — Device-resident Tensor + inference path  `[ ]`
+### Phase 0 — Device-resident Tensor + inference path  `[x]`
 
 **Objective.** `prefill`/`decode` keep weights, activations, and KV on the GPU
 end-to-end. One H2D (tokens) and one D2H (logits) per step.
+
+> **Done.** `core::Tensor`/`PoolAllocator`, device kernel seam, and a device
+> executor (`model::DeviceModel`) holding weights/KV/RoPE on the GPU. prefill/decode
+> route through it under the cuda backend. Verified: device decode matches device
+> prefill's last row within 1e-5, device prefill matches host training-forward within
+> 1e-4. Decode latency ~3.9× faster (1472 → 379 µs/token). Remaining launch-bound
+> overhead is addressed by CUDA graphs in Phase 5.
 
 > Split into two plans: **0a — device foundation** (`Tensor`, allocator, kernel
 > seam) at [docs/superpowers/plans/2026-06-07-phase-0a-device-tensor.md](superpowers/plans/2026-06-07-phase-0a-device-tensor.md);
