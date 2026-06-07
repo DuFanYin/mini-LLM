@@ -1,6 +1,7 @@
 #include "kernel/kernel.h"
 
 #include "kernel/cuda/device.cuh"
+#include "kernel/cuda/launch.h"
 
 #include <cmath>
 
@@ -302,5 +303,23 @@ void scale(float* x, size_t n, float s) {
     cuda::sync();
     cuda::download(x, d_x, n);
 }
+
+namespace cuda {
+
+void add_device(const float* a, const float* b, float* y, size_t n) {
+    if (n == 0) {
+        return;
+    }
+    add_kernel<<<blocks_for(n), kBlock>>>(a, b, y, static_cast<int>(n));
+}
+
+void silu_mul_device(const float* gate, const float* up, float* hidden, size_t n) {
+    if (n == 0) {
+        return;
+    }
+    silu_mul_kernel<<<blocks_for(n), kBlock>>>(gate, up, hidden, static_cast<int>(n));
+}
+
+} // namespace cuda
 
 } // namespace kernel

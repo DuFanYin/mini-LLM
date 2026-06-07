@@ -4,6 +4,10 @@
 #include "engine/io.h"
 #include "model/executor.h"
 
+#ifdef MINI_LLM_USE_CUDA
+#include "model/device_executor.h"
+#endif
+
 #include <algorithm>
 #include <random>
 #include <utility>
@@ -157,6 +161,18 @@ MiniLlm::MiniLlm(ModelConfig config, ModelWeights weights) : config_(std::move(c
     }
 }
 
+MiniLlm::~MiniLlm() = default;
+MiniLlm::MiniLlm(MiniLlm&&) = default;
+MiniLlm& MiniLlm::operator=(MiniLlm&&) = default;
+
+#ifdef MINI_LLM_USE_CUDA
+void MiniLlm::ensure_device_model(size_t max_seq_len) {
+    if (device_model_ == nullptr || device_model_->max_seq_len() < max_seq_len) {
+        device_model_ = std::make_unique<DeviceModel>(config_, weights_, std::max<size_t>(128, max_seq_len));
+    }
+}
+#endif
+
 // --- Accessors ----------------------------------------------------------------
 
 size_t MiniLlm::num_layers() const noexcept {
@@ -217,7 +233,13 @@ void MiniLlm::prefill(const std::vector<uint32_t>& token_ids, float* hidden_out)
     in.is_prefill = true;
     engine::embed_tokens(token_ids, weights().token_embedding, d_model(), in.hidden_states);
 
+#ifdef MINI_LLM_USE_CUDA
+    ensure_device_model(cache_->max_seq_len());
+    device_model_->reset();
+    device_model_->forward(in.hidden_states.data(), in.seq_len, hidden_out);
+#else
     model::forward_model(config_, layer_weights_, rope_q_, rope_k_, in, cache_.get(), hidden_out, nullptr);
+#endif
 }
 
 void MiniLlm::decode(uint32_t token_id, float* hidden_out) {
@@ -231,7 +253,12 @@ void MiniLlm::decode(uint32_t token_id, float* hidden_out) {
     const std::vector<uint32_t> token_ids{token_id};
     engine::embed_tokens(token_ids, weights().token_embedding, d_model(), in.hidden_states);
 
+#ifdef MINI_LLM_USE_CUDA
+    ensure_device_model(cache_->max_seq_len());
+    device_model_->forward(in.hidden_states.data(), 1, hidden_out);
+#else
     model::forward_model(config_, layer_weights_, rope_q_, rope_k_, in, cache_.get(), hidden_out, nullptr);
+#endif
 }
 
 void MiniLlm::forward_train(const std::vector<uint32_t>& token_ids,

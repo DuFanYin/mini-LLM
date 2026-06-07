@@ -1,6 +1,7 @@
 #include "kernel/kernel.h"
 
 #include "kernel/cuda/device.cuh"
+#include "kernel/cuda/launch.h"
 
 // CUDA backend for the GEMM-family kernels (handwritten, no cuBLAS).
 //
@@ -193,5 +194,27 @@ void linear_backward(const float* x, const float* w, bool has_bias, const float*
         cuda::download(grad_b, d_gb, N);
     }
 }
+
+namespace cuda {
+
+void gemm_nt_device(const float* A, const float* B, float* C, size_t M, size_t N, size_t K) {
+    if (M == 0 || N == 0 || K == 0) {
+        return;
+    }
+    const dim3 block(kTile, kTile);
+    nt_kernel<<<grid_for(static_cast<int>(M), static_cast<int>(N)), block>>>(
+        A, B, nullptr, C, static_cast<int>(M), static_cast<int>(N), static_cast<int>(K));
+}
+
+void linear_device(const float* x, const float* w, const float* bias, float* y, size_t M, size_t N, size_t K) {
+    if (M == 0 || N == 0 || K == 0) {
+        return;
+    }
+    const dim3 block(kTile, kTile);
+    nt_kernel<<<grid_for(static_cast<int>(M), static_cast<int>(N)), block>>>(
+        x, w, bias, y, static_cast<int>(M), static_cast<int>(N), static_cast<int>(K));
+}
+
+} // namespace cuda
 
 } // namespace kernel
