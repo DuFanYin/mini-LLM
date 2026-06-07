@@ -58,7 +58,13 @@ TEST(ModelPointerTest, PrefillAndTrainingForwardWriteOnlyProvidedHiddenSpan) {
     for (size_t i = 0; i < hidden_size; ++i) {
         ASSERT_TRUE(std::isfinite(prefill_guarded[i + 1u]));
         ASSERT_TRUE(std::isfinite(training_guarded[i + 1u]));
+#ifdef MINI_LLM_USE_CUDA
+        // prefill runs on the device-resident backend whose reductions (RMSNorm,
+        // attention) differ from the host training-forward at the fp-rounding level.
+        EXPECT_NEAR(prefill_guarded[i + 1u], training_guarded[i + 1u], 1e-4f);
+#else
         EXPECT_FLOAT_EQ(prefill_guarded[i + 1u], training_guarded[i + 1u]);
+#endif
     }
 }
 

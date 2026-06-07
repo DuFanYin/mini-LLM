@@ -11,9 +11,14 @@
 
 namespace model {
 
+class DeviceModel; // device-resident inference forward (cuda backend only)
+
 class MiniLlm {
 public:
     MiniLlm(ModelConfig config, ModelWeights weights);
+    ~MiniLlm();                            // defined in mini_llm.cpp where DeviceModel is complete
+    MiniLlm(MiniLlm&&);                    // (declaring the dtor suppresses implicit moves)
+    MiniLlm& operator=(MiniLlm&&);
 
     /// Entry 1: random-initialized model with fixed in-repo hyperparams.
     [[nodiscard]] static MiniLlm init_random(size_t vocab_size, uint32_t seed);
@@ -48,6 +53,12 @@ private:
     mutable std::vector<RopeCache> rope_k_;
     std::unique_ptr<KVCache> cache_;
     size_t cache_page_size_ = 16;
+#ifdef MINI_LLM_USE_CUDA
+    // Device-resident inference path. Lazily built from current weights on first
+    // prefill/decode; snapshots weights at build time (inference use).
+    std::unique_ptr<DeviceModel> device_model_;
+    void ensure_device_model(size_t max_seq_len);
+#endif
 };
 
 } // namespace model
