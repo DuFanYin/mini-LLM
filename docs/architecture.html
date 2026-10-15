@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mini-LLM architecture</title>
+<style>
+  :root {
+    --bg:#fbfbfa; --fg:#1d1d1f; --muted:#66666c; --line:#8e8e96; --card:#ffffff; --border:#d6d6db;
+    --core:#dbeafe; --io:#dcfce7; --model:#fef3c7; --app:#ede9fe; --plan:#f4f4f5; --load:#2563eb; --gen:#ea580c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#141416; --fg:#ececf0; --muted:#a0a0a8; --line:#74747e; --card:#1c1c20; --border:#34343b;
+      --core:#1e3a5f; --io:#1f4632; --model:#4a3b12; --app:#3b2f63; --plan:#26262b; --load:#60a5fa; --gen:#fb923c;
+    }
+  }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.55 -apple-system,"Segoe UI",system-ui,sans-serif; }
+  main { max-width:1180px; margin:0 auto; padding:32px 24px 64px; }
+  h1 { font-size:24px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 24px; }
+  section { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:20px 22px; margin:0 0 24px; }
+  h2 { font-size:17px; margin:0 0 2px; }
+  .claim { margin:0 0 12px; }
+  ul { margin:10px 0 0; padding-left:20px; color:var(--muted); }
+  code { font:12.5px ui-monospace,SFMono-Regular,Menlo,monospace; }
+
+  /* 3D model */
+  #stage { position:relative; height:640px; border-radius:10px; overflow:hidden; background:#07090d; }
+  #stage canvas { display:block; }
+  #labels { position:absolute; inset:0; pointer-events:none; }
+  .lbl { font:600 11px ui-monospace,SFMono-Regular,Menlo,monospace; color:#cbd5e1; white-space:nowrap; text-shadow:0 0 6px #000; }
+  .lbl.big { font:600 13px -apple-system,"Segoe UI",system-ui,sans-serif; color:#f1f5f9; }
+  .lbl.note { font:11px -apple-system,"Segoe UI",system-ui,sans-serif; color:#94a3b8; }
+  .lbl.D { color:#5eead4; } .lbl.A { color:#fda4af; }
+  .hud { position:absolute; color:#cbd5e1; font:12px -apple-system,"Segoe UI",system-ui,sans-serif; pointer-events:none; }
+  #legend { left:16px; top:14px; line-height:1.9; }
+  #legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:7px; vertical-align:-1px; }
+  #hint { right:16px; bottom:12px; color:#64748b; }
+  #stats { right:16px; top:14px; text-align:right; line-height:1.7; color:#94a3b8; }
+  #stats b { color:#f1f5f9; font-weight:600; }
+  #tip { position:absolute; display:none; pointer-events:none; background:rgba(15,23,42,.92); border:1px solid #334155;
+         border-radius:8px; padding:8px 10px; color:#e2e8f0; font:12px ui-monospace,SFMono-Regular,Menlo,monospace; line-height:1.5; }
+  #tip .n { color:#f8fafc; font-weight:600; }
+  #fallback { position:absolute; inset:0; display:none; align-items:center; justify-content:center; color:#94a3b8; }
+
+  /* code architecture */
+  svg.arch { width:100%; height:auto; display:block; }
+  svg.arch text { fill:var(--fg); }
+  svg.arch .t { font:600 13px -apple-system,"Segoe UI",system-ui,sans-serif; }
+  svg.arch .s { font:11.5px -apple-system,"Segoe UI",system-ui,sans-serif; fill:var(--muted); }
+  svg.arch .col { font:600 11px -apple-system,"Segoe UI",system-ui,sans-serif; fill:var(--muted); letter-spacing:.06em; }
+  svg.arch .row { font:600 12px -apple-system,"Segoe UI",system-ui,sans-serif; fill:var(--muted); }
+  svg.arch .box { stroke:var(--border); }
+  svg.arch .plan { fill:var(--plan); stroke:var(--line); stroke-dasharray:4 3; }
+  svg.arch .sep { stroke:var(--border); stroke-dasharray:2 4; }
+  svg.arch .e { fill:none; stroke-width:1.8; }
+  svg.arch .load { stroke:var(--load); marker-end:url(#a-load); }
+  svg.arch .gen { stroke:var(--gen); marker-end:url(#a-gen); }
+  .key { display:inline-block; width:18px; height:3px; vertical-align:middle; margin:0 4px 0 12px; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<main>
+<h1>mini-LLM</h1>
+<p class="sub">A from-scratch CUDA inference engine for Qwen3.5-0.8B.</p>
+
+<section>
+  <h2>Model · Qwen3.5-0.8B text stack</h2>
+  <p class="claim">Every weight matrix is drawn to scale (1 unit = 512 dims): 18 GatedDeltaNet layers carry a fixed 16 × 128 × 128 state, 6 gated-attention layers carry a growing KV cache, and the embedding doubles as the lm_head.</p>
+  <div id="stage">
+    <div id="labels"></div>
+    <div id="legend" class="hud">
+      <div><i style="background:#2dd4bf"></i>GatedDeltaNet · in_proj_qkv / z / a / b · conv1d · out_proj</div>
+      <div><i style="background:#fb7185"></i>gated attention · q|gate · k · v · o</div>
+      <div><i style="background:#fbbf24"></i>SwiGLU MLP · gate · up · down</div>
+      <div><i style="background:#818cf8"></i>embedding = lm_head (tied)</div>
+      <div><i style="background:#94a3b8"></i>RMSNorm weights</div>
+    </div>
+    <div id="stats" class="hud">
+      <div><b>752.4M</b> params · <b>1.50 GB</b> bf16</div>
+      <div>24 layers = 18 D + 6 A · hidden 1024</div>
+      <div>decode floor ≈ <b>0.86 ms/token</b> @ 1.8 TB/s</div>
+    </div>
+    <div id="hint" class="hud">drag to orbit · right-drag to pan · scroll to zoom · hover a plate</div>
+    <div id="tip"></div>
+    <div id="fallback">WebGL is not available in this browser.</div>
+  </div>
+  <ul>
+    <li>A plate is a <code>[out, in]</code> matrix: height = out, depth = in. The embedding (248 320 rows) is cut at 20 units.</li>
+    <li>Semantics follow transformers' <code>modeling_qwen3_5.py</code>; <code>ROADMAP.md</code> §2 has the equations.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Code · how the engine is built</h2>
+  <p class="claim">The host owns structure and control; weights, per-sequence state and every per-token kernel stay on the GPU, so only token ids cross PCIe.
+  <span class="key" style="background:var(--load)"></span>load path <span class="key" style="background:var(--gen)"></span>generate path · solid = built, dashed = planned</p>
+  <svg width="0" height="0" style="position:absolute"><defs>
+    <marker id="a-load" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--load)"/></marker>
+    <marker id="a-gen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--gen)"/></marker>
+  </defs></svg>
+  <svg class="arch" viewBox="0 0 1000 370"><text class="col" x="120" y="28">HOST · structure and control</text><text class="col" x="700" y="28">GPU · RTX PRO 6000 · sm_120 · 1.8 TB/s</text><line class="sep" x1="680" y1="40" x2="680" y2="360"/><text class="row" x="16" y="85">apps</text><text class="row" x="16" y="165">runtime</text><text class="row" x="16" y="245">model · kernels</text><text class="row" x="16" y="325">foundation</text><rect class="box" x="120" y="50" width="160" height="60" rx="6" fill="var(--app)"/><text class="t" x="130" y="77">inspect</text><text class="s" x="130" y="93">load · report</text><rect class="plan" x="300" y="50" width="170" height="60" rx="6" fill="var(--card)"/><text class="t" x="310" y="77">chat</text><text class="s" x="310" y="93">tokenize · stream text</text><rect class="plan" x="490" y="50" width="170" height="60" rx="6" fill="var(--card)"/><text class="t" x="500" y="77">benchmark</text><text class="s" x="500" y="93">% of floor · vs cuBLAS</text><rect class="box" x="700" y="50" width="280" height="60" rx="6" fill="var(--card)"/><text class="t" x="710" y="77">token ids in · sampled ids out</text><text class="s" x="710" y="93">the only per-token PCIe traffic</text><rect class="plan" x="120" y="130" width="160" height="60" rx="6" fill="var(--card)"/><text class="t" x="130" y="157">Tokenizer</text><text class="s" x="130" y="173">byte-level BPE</text><rect class="plan" x="300" y="130" width="360" height="60" rx="6" fill="var(--card)"/><text class="t" x="310" y="157">Executor + Scheduler</text><text class="s" x="310" y="173">prefill · decode · CUDA graph · continuous batching</text><rect class="plan" x="700" y="130" width="135" height="60" rx="6" fill="var(--card)"/><text class="t" x="710" y="157">Stream</text><text class="s" x="710" y="173">one sync per token</text><rect class="plan" x="845" y="130" width="135" height="60" rx="6" fill="var(--card)"/><text class="t" x="855" y="157">Sequence state</text><text class="s" x="855" y="173">KV ×6 · GDN S ×18</text><rect class="plan" x="120" y="210" width="160" height="60" rx="6" fill="var(--card)"/><text class="t" x="130" y="237">Kernels  .cu</text><text class="s" x="130" y="253">GEMV · GEMM · GDN · attn</text><rect class="box" x="300" y="210" width="170" height="60" rx="6" fill="var(--model)"/><text class="t" x="310" y="237">Config</text><text class="s" x="310" y="253">validated · derived dims</text><rect class="box" x="490" y="210" width="170" height="60" rx="6" fill="var(--model)"/><text class="t" x="500" y="237">Weights</text><text class="s" x="500" y="253">24 × variant&lt;D, A&gt; + MLP</text><rect class="box" x="700" y="210" width="280" height="60" rx="6" fill="var(--core)"/><text class="t" x="710" y="237">Weight arena</text><text class="s" x="710" y="253">1 cudaMalloc · 320 tensors · 1.5 GB bf16</text><rect class="box" x="120" y="290" width="160" height="60" rx="6" fill="var(--core)"/><text class="t" x="130" y="317">core</text><text class="s" x="130" y="333">Tensor · Pool · Arena</text><rect class="box" x="300" y="290" width="360" height="60" rx="6" fill="var(--io)"/><text class="t" x="310" y="317">io</text><text class="s" x="310" y="333">Json · safetensors (mmap) · multi-shard Checkpoint</text><rect class="box" x="700" y="290" width="280" height="60" rx="6" fill="var(--plan)"/><text class="t" x="710" y="317">CUDA runtime only</text><text class="s" x="710" y="333">no torch · Triton · cuBLAS · CUTLASS</text><path class="e load" d="M385,290 L385,272"/><path class="e load" d="M575,290 L575,272"/><path class="e load" d="M660,240 L698,240"/><path class="e gen" d="M385,110 L385,128"/><path class="e gen" d="M280,160 L298,160"/><path class="e gen" d="M330,190 L250,208"/><path class="e gen" d="M660,160 L698,160"/><path class="e gen" d="M835,160 L843,160"/><path class="e gen" d="M767,210 L767,192"/><path class="e gen" d="M767,110 L767,128"/></svg>
+  <ul>
+    <li>Dependencies point down only; each row is a CMake target (<code>mini_llm::core | io | model</code> today) and only kernels are <code>.cu</code>.</li>
+    <li>Loading checks every tensor's name, shape and dtype against the config before one <code>cudaMalloc</code>; unknown tensors fail, vision and MTP are skipped.</li>
+  </ul>
+</section>
+</main>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { CSS2DRenderer, CSS2DObject } from "three/addons/renderers/CSS2DRenderer.js";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+
+// Qwen3.5-0.8B text config (checkpoint revision 2fc0636).
+const M = {
+  hidden: 1024, mlp: 3584, vocab: 248320,
+  kinds: Array.from({ length: 24 }, (_, i) => (i % 4 === 3 ? "A" : "D")),
+  gdn: { heads: 16, kd: 128, vd: 128, conv: 4 },
+  attn: { q: 8, kv: 2, hd: 256 },
+};
+const S = 512;                 // dims per world unit
+const GAP = 0.34;              // between plates in a layer
+const LAYER_GAP = 1.5;
+const COL = { D: 0x2dd4bf, A: 0xfb7185, mlp: 0xfbbf24, norm: 0x94a3b8, emb: 0x818cf8, state: 0x99f6e4, kv: 0xfecdd3 };
+
+const stage = document.getElementById("stage");
+const tip = document.getElementById("tip");
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+} catch {
+  document.getElementById("fallback").style.display = "flex";
+  throw new Error("no WebGL");
+}
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+stage.prepend(renderer.domElement);
+
+const labels = new CSS2DRenderer({ element: document.getElementById("labels") });
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x07090d);
+scene.fog = new THREE.Fog(0x07090d, 110, 230);
+const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 1000);
+
+scene.add(new THREE.HemisphereLight(0xbcd7ff, 0x0b0d12, 1.1));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(-30, 50, 40);
+scene.add(sun);
+
+// Floor grid for depth.
+const grid = new THREE.GridHelper(260, 130, 0x1e293b, 0x111827);
+grid.position.set(60, -11, 0);
+scene.add(grid);
+
+const pickables = [];
+const fmtBytes = (b) => (b >= 1 << 20 ? (b / (1 << 20)).toFixed(1) + " MiB" : (b / 1024).toFixed(1) + " KiB");
+
+// A weight tensor as a plate: height = rows (out), depth = cols (in).
+function plate(x, rows, cols, color, info, { thick = 0.1, y = 0, z = 0, opacity = 0.82, maxH = Infinity } = {}) {
+  const h = Math.min(Math.max(rows / S, 0.05), maxH);
+  const d = Math.max(cols / S, 0.05);
+  const geo = new THREE.BoxGeometry(thick, h, d);
+  const mat = new THREE.MeshStandardMaterial({
+    color, emissive: color, emissiveIntensity: 0.22, roughness: 0.35, metalness: 0.15,
+    transparent: true, opacity, depthWrite: opacity > 0.9,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(x, y, z);
+  const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo),
+    new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.95 }));
+  mesh.add(edges);
+  mesh.userData = info;
+  scene.add(mesh);
+  pickables.push(mesh);
+  return mesh;
+}
+
+function label(text, pos, cls = "lbl") {
+  const el = document.createElement("div");
+  el.className = cls;
+  el.textContent = text;
+  const o = new CSS2DObject(el);
+  o.position.copy(pos);
+  scene.add(o);
+  return o;
+}
+
+const t = (name, shape, dtype = "bf16") => ({
+  name, shape, dtype, bytes: shape.reduce((a, b) => a * b, 1) * (dtype === "f32" ? 4 : 2),
+});
+
+let x = 0;
+const EMB_CUT = 20;
+
+// Embedding.
+plate(x, M.vocab, M.hidden, COL.emb, t("embed_tokens.weight", [M.vocab, M.hidden]), { thick: 0.6, maxH: EMB_CUT, opacity: 0.7 });
+label("embed_tokens", new THREE.Vector3(x, -EMB_CUT / 2 - 1.4, 0), "lbl big");
+label("248 320 × 1024 · cut", new THREE.Vector3(x, -EMB_CUT / 2 - 2.8, 0), "lbl note");
+label("token ids →", new THREE.Vector3(x - 1.5, 2.2, 0), "lbl note");
+const embX = x;
+x += 3;
+
+const kvBars = [];
+const layerStart = [];
+for (let i = 0; i < M.kinds.length; i++) {
+  const k = M.kinds[i];
+  const p = `layers.${i}.`;
+  layerStart.push(x);
+  const x0 = x;
+  const step = () => (x += GAP);
+
+  plate(x, M.hidden, 1, COL.norm, t(p + "input_layernorm.weight", [M.hidden])); step();
+  if (k === "D") {
+    const g = M.gdn, conv = 2 * g.heads * g.kd + g.heads * g.vd;
+    plate(x, conv, M.hidden, COL.D, t(p + "linear_attn.in_proj_qkv.weight", [conv, M.hidden])); step();
+    plate(x, g.heads * g.vd, M.hidden, COL.D, t(p + "linear_attn.in_proj_z.weight", [g.heads * g.vd, M.hidden])); step();
+    plate(x, g.heads, M.hidden, COL.D, t(p + "linear_attn.in_proj_a.weight  (+ A_log, dt_bias)", [g.heads, M.hidden]), { y: 1.2 });
+    plate(x, g.heads, M.hidden, COL.D, t(p + "linear_attn.in_proj_b.weight", [g.heads, M.hidden]), { y: -1.2 }); step();
+    plate(x, conv, g.conv, COL.D, t(p + "linear_attn.conv1d.weight  (depthwise, causal)", [conv, 1, g.conv]), { opacity: 0.95 }); step();
+    plate(x, g.vd, 1, COL.norm, t(p + "linear_attn.norm.weight  (gated RMSNorm)", [g.vd], "f32")); step();
+    plate(x, M.hidden, g.heads * g.vd, COL.D, t(p + "linear_attn.out_proj.weight", [M.hidden, g.heads * g.vd])); step();
+    // Recurrent state: 16 heads of 128 × 128, drawn as a 4 × 4 tile above the layer.
+    const sx = x0 + 3 * GAP;
+    for (let h = 0; h < g.heads; h++) {
+      const tile = plate(sx + (h % 4) * 0.36, g.kd, g.vd, COL.state,
+        t(`state  layer ${i} · head ${h}  (per sequence)`, [g.kd, g.vd], "f32"),
+        { thick: 0.04, y: 8.2 + Math.floor(h / 4) * 0.36, z: 0, opacity: 0.55 });
+      tile.scale.set(1, 0.6, 0.6);
+    }
+  } else {
+    const a = M.attn;
+    const qh = a.q * a.hd;
+    plate(x, qh, M.hidden, COL.A, t(p + "self_attn.q_proj.weight  [query]", [qh, M.hidden]), { y: qh / S / 2 });
+    plate(x, qh, M.hidden, 0xfbcfe8, t(p + "self_attn.q_proj.weight  [gate]", [qh, M.hidden]), { y: -qh / S / 2 }); step();
+    plate(x, a.kv * a.hd, M.hidden, COL.A, t(p + "self_attn.k_proj.weight", [a.kv * a.hd, M.hidden]), { y: 0.7 });
+    plate(x, a.kv * a.hd, M.hidden, COL.A, t(p + "self_attn.v_proj.weight", [a.kv * a.hd, M.hidden]), { y: -0.7 }); step();
+    plate(x, a.hd, 1, COL.norm, t(p + "self_attn.q_norm / k_norm", [a.hd])); step();
+    plate(x, M.hidden, qh, COL.A, t(p + "self_attn.o_proj.weight", [M.hidden, qh])); step();
+    // KV cache: one bar per cached token, growing with context.
+    const cx = x0 + 2 * GAP;
+    const bars = [];
+    for (let j = 0; j < 24; j++) {
+      const bar = plate(cx, a.kv * a.hd * 2, 1, COL.kv, t(`KV cache  layer ${i} · token ${j}`, [2, a.kv, a.hd]),
+        { thick: 0.05, y: 6.6, z: -1.2 + j * 0.1, opacity: 0.6 });
+      bars.push(bar);
+    }
+    kvBars.push(bars);
+  }
+  plate(x, M.hidden, 1, COL.norm, t(p + "post_attention_layernorm.weight", [M.hidden])); step();
+  plate(x, M.mlp, M.hidden, COL.mlp, t(p + "mlp.gate_proj.weight", [M.mlp, M.hidden])); step();
+  plate(x, M.mlp, M.hidden, COL.mlp, t(p + "mlp.up_proj.weight", [M.mlp, M.hidden])); step();
+  plate(x, M.hidden, M.mlp, COL.mlp, t(p + "mlp.down_proj.weight", [M.hidden, M.mlp]));
+
+  const mid = (x0 + x) / 2;
+  label(`${i} ${k}`, new THREE.Vector3(mid, -8.4, 0), `lbl ${k}`);
+  if (i === 0) {
+    label("GatedDeltaNet", new THREE.Vector3(mid, 15, 0), "lbl big");
+    label("state S · 16 × 128×128 f32", new THREE.Vector3(x0 + 3 * GAP + 0.5, 10.4, 0), "lbl note");
+  }
+  if (i === 3) {
+    label("gated attention", new THREE.Vector3(mid, 15, 0), "lbl big");
+    label("KV cache · grows per token", new THREE.Vector3(mid, 8.6, 0), "lbl note");
+  }
+  x += LAYER_GAP;
+}
+const endX = x;
+
+// Final norm and the tied lm_head.
+plate(x, M.hidden, 1, COL.norm, t("norm.weight", [M.hidden])); x += 2.2;
+const head = plate(x, M.vocab, M.hidden, COL.emb, t("lm_head = embed_tokens.weight (tied)", [M.vocab, M.hidden]),
+  { thick: 0.6, maxH: EMB_CUT, opacity: 0.45 });
+label("lm_head (tied)", new THREE.Vector3(x, EMB_CUT / 2 + 1.6, 0), "lbl big");
+label("→ logits 248 320", new THREE.Vector3(x + 7, 0, 0), "lbl note");
+const headX = x;
+
+// Tie arc between the embedding and the lm_head.
+const arc = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(embX, EMB_CUT / 2, 0), new THREE.Vector3(embX + 20, 24, 0),
+  new THREE.Vector3((embX + headX) / 2, 27, 0), new THREE.Vector3(headX - 20, 24, 0),
+  new THREE.Vector3(headX, EMB_CUT / 2, 0),
+]);
+const arcLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(arc.getPoints(200)),
+  new THREE.LineDashedMaterial({ color: COL.emb, dashSize: 1.2, gapSize: 0.8 }));
+arcLine.computeLineDistances();
+scene.add(arcLine);
+label("same weights", new THREE.Vector3((embX + headX) / 2, 28.5, 0), "lbl note");
+
+// Residual stream and travelling tokens.
+const stream = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, headX - embX, 8),
+  new THREE.MeshBasicMaterial({ color: 0x60a5fa, transparent: true, opacity: 0.55 }));
+stream.rotation.z = Math.PI / 2;
+stream.position.set((embX + headX) / 2, 0, 0);
+scene.add(stream);
+label("residual stream · 1024", new THREE.Vector3(embX + 1.5, -1.6, 0), "lbl note");
+
+const pulses = [];
+for (let j = 0; j < 4; j++) {
+  const s = new THREE.Mesh(new THREE.SphereGeometry(0.42, 24, 16), new THREE.MeshBasicMaterial({ color: 0xbfdbfe }));
+  s.add(new THREE.PointLight(0x93c5fd, 30, 10));
+  scene.add(s);
+  pulses.push(s);
+}
+
+// Camera, controls, post-processing.
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+const mid = (embX + headX) / 2;
+controls.target.set(mid, 4, 0);
+camera.position.set(mid - 34, 30, 112);
+controls.update();
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.55, 0.5, 0.82);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+function resize() {
+  const w = stage.clientWidth, h = stage.clientHeight;
+  renderer.setSize(w, h);
+  composer.setSize(w, h);
+  labels.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(stage);
+resize();
+
+// Hover tooltip.
+const ray = new THREE.Raycaster();
+const ptr = new THREE.Vector2();
+let hovered = null;
+renderer.domElement.addEventListener("pointermove", (e) => {
+  const r = renderer.domElement.getBoundingClientRect();
+  ptr.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(ptr, camera);
+  const hit = ray.intersectObjects(pickables, false)[0];
+  if (hovered && hovered !== hit?.object) hovered.material.emissiveIntensity = 0.22;
+  hovered = hit?.object ?? null;
+  if (!hovered) { tip.style.display = "none"; return; }
+  hovered.material.emissiveIntensity = 0.9;
+  const d = hovered.userData;
+  tip.innerHTML = `<div class="n">${d.name}</div>[${d.shape.join(", ")}] · ${d.dtype} · ${fmtBytes(d.bytes)}`;
+  tip.style.display = "block";
+  tip.style.left = Math.min(e.clientX - r.left + 14, r.width - 360) + "px";
+  tip.style.top = (e.clientY - r.top + 14) + "px";
+});
+renderer.domElement.addEventListener("pointerleave", () => (tip.style.display = "none"));
+
+// Animate: tokens flow through the stack; KV caches fill up and reset.
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const time = clock.getElapsedTime();
+  const span = headX - embX;
+  pulses.forEach((s, j) => {
+    const u = ((time * 0.09 + j / pulses.length) % 1);
+    s.position.set(embX + u * span, 0, 0);
+  });
+  const filled = Math.floor((time * 2.2) % 26);
+  kvBars.forEach((bars) => bars.forEach((b, j) => (b.visible = j < filled)));
+  controls.update();
+  composer.render();
+  labels.render(scene, camera);
+});
+</script>
+</body>
+</html>

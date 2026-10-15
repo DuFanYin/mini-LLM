@@ -1,0 +1,32 @@
+[project]
+name = "qwen35-ref"
+version = "0.1.0"
+description = "NumPy reference forward pass of Qwen3.5 text models, used as the engine's correctness oracle"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.1",
+    "tokenizers>=0.21",
+]
+
+[project.scripts]
+qwen35-ref = "qwen35_ref.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.17.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "NPY"]

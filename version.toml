@@ -10,7 +10,7 @@ source = "conda-forge gxx=15 (build 15.3.0-7)"
 note = "GCC 16 needs CUDA >= 13.4"
 
 [cmake]
-minimum = "3.18"
+minimum = "3.25"            # CMakePresets.json v6
 tested = "3.28.3"
 
 [language]
@@ -21,3 +21,15 @@ cuda = "c++20"
 name = "RTX PRO 6000 Blackwell"
 arch = "sm_120"
 driver = "610.43.02"
+
+[tools]
+googletest = "1.15.2"      # fetched by tests/CMakeLists.txt, sha256-pinned
+clang-format = "21.1.8"    # conda-forge
+
+[python]                   # tools/reference, locked in tools/reference/uv.lock
+version = "3.12.3"
+uv = "0.12.0"
+numpy = "2.5.4"
+tokenizers = "0.23.3"
+ruff = "0.17.0"
+pytest = "9.1.1"

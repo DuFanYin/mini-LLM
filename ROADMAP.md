@@ -68,7 +68,7 @@ The lm_head alone is a third of the bytes, so it is the first kernel worth tunin
 
 ## 4. Correctness strategy
 
-- `tools/reference/qwen35_ref.py`: the text forward in NumPy, f32. It reads safetensors directly (8-byte header length, JSON header, bf16 as `uint16 << 16` viewed as f32) and gets token ids from the `tokenizers` package. The recurrence is a plain per-token loop. No torch.
+- `tools/reference` (`qwen35_ref.model`): the text forward in NumPy, f32. It reads safetensors directly (8-byte header length, JSON header, bf16 as `uint16 << 16` viewed as f32) and gets token ids from the `tokenizers` package. The recurrence is a plain per-token loop. No torch.
 - It dumps golden tensors for fixed prompts: embeddings, each layer's output after the mixer and after the MLP, final logits, and the greedy continuation.
 - Engine tests compare layer by layer, so a mismatch names its layer. The f32 path must reproduce greedy tokens exactly; the bf16 path within tolerance and on the first N greedy tokens.
 - Each optimised kernel keeps its naive predecessor as an in-test reference.
@@ -82,21 +82,22 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 - [x] Remove training, the Which-Span task, the toy MiniLlm model, the scalar backend and the per-call CUDA kernels; keep `src/core` (allocator, device Tensor).
 - [x] `scripts/download_weights.sh`: pinned revision, sha256 check, resumable.
 
-### Phase 1 — Load the checkpoint `[ ]`
+### Phase 1 — Load the checkpoint `[x]`
 
-- [ ] 1.1 Hand-written JSON reader; `Config` from `config.json` → `text_config`, with the derived dims above.
-- [ ] 1.2 Tensor dtype in `core::Tensor` (f32, bf16).
-- [ ] 1.3 safetensors reader: mmap, parse the header, look tensors up through `model.safetensors.index.json`.
-- [ ] 1.4 Weight loader: map `model.language_model.*` onto per-layer structs, check every shape against the config, upload once; skip `model.visual.*` and `mtp.*`, and fail on any other unconsumed tensor.
-- [ ] 1.5 `inspect` binary: config, layer pattern, per-part parameter counts, device bytes, upload time.
+- [x] 1.1 Hand-written JSON reader; `Config` from `config.json` → `text_config`, with the derived dims above.
+- [x] 1.2 Tensor dtype in `core::Tensor` (f32, bf16).
+- [x] 1.3 safetensors reader: mmap, parse the header, look tensors up through `model.safetensors.index.json`.
+- [x] 1.4 Weight loader: map `model.language_model.*` onto per-layer structs, check every shape against the config, upload once; skip `model.visual.*` and `mtp.*`, and fail on any other unconsumed tensor.
+- [x] 1.5 `inspect` binary: config, layer pattern, per-part parameter counts, device bytes, upload time.
+- [x] 1.6 Build with CMake presets (`release`, `debug`, `-Werror`), one target per module, tests labelled `cpu` / `gpu` / `weights`; architecture diagram in `docs/architecture.html`.
 
 **Done when** the whole text model is on the GPU and every tensor is accounted for.
 
-### Phase 2 — NumPy reference `[ ]`
+### Phase 2 — NumPy reference `[x]`
 
-- [ ] 2.1 `qwen35_ref.py` as in §4.
-- [ ] 2.2 Check it against published greedy outputs for a few prompts.
-- [ ] 2.3 Golden dumps in a simple binary format the C++ tests read.
+- [x] 2.1 `tools/reference` (uv project, numpy + tokenizers, no torch): one `forward` for prefill and decode over a `State` (KV cache, conv rows, recurrent S); f32 throughout, asserted.
+- [x] 2.2 Validation: greedy continuations are correct on the built-in prompts ("Paris.", "6, 7, 8, 9,", `fibonacci(n-1) + fibonacci(n-2)`); decode and split prefill reproduce full-prefill logits (pytest). Checked once against transformers 5.19.0 (Qwen3_5ForConditionalGeneration, f32, eager attention, its chunked GDN path) in a throwaway venv on 2026-10-15: every layer's output and the last-position logits agree within 2.2e-6 relative error on all three prompts, and the 12-token greedy continuations are identical. torch is not a dependency of this repo.
+- [x] 2.3 `qwen35-ref dump` writes `weights/golden/<prompt>.safetensors`: `input_ids`, `greedy_ids` (I32), `embed`, `layerNN.mixer`, `layerNN.out`, `final_norm` (F32, all positions) and the last row of `logits`. The C++ reader needs I32 support to read the ids (Phase 3).
 
 ### Phase 3 — Correct engine, naive kernels `[ ]`
 
