@@ -1,0 +1,23 @@
+# Toolchain this repo is built and tested with.
+
+[cuda]
+version = "13.0.88"        # nvcc; host compilers up to GCC 15
+path = "/usr/local/cuda"
+
+[gcc]
+version = "15.3.0"         # host compiler for both g++ and nvcc
+source = "conda-forge gxx=15 (build 15.3.0-7)"
+note = "GCC 16 needs CUDA >= 13.4"
+
+[cmake]
+minimum = "3.18"
+tested = "3.28.3"
+
+[language]
+cxx = "c++23"
+cuda = "c++20"
+
+[gpu]
+name = "RTX PRO 6000 Blackwell"
+arch = "sm_120"
+driver = "610.43.02"

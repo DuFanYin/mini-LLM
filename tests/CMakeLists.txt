@@ -1,16 +1,3 @@
-# Tests subdirectory: builds the debug_scores helper and the gtest-based
-# tests_runner. The runner is gated on BUILD_TESTS (declared at the root) so
-# you can `cmake -DBUILD_TESTS=OFF` and still get debug_scores.
-
-add_executable(debug_scores debug_scores.cpp)
-target_link_libraries(debug_scores PRIVATE model mini_transformer_warnings)
-set_target_properties(debug_scores PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
-
-if(NOT BUILD_TESTS)
-    return()
-endif()
-
 include(FetchContent)
 find_package(GTest QUIET)
 if(NOT GTest_FOUND)
@@ -23,25 +10,8 @@ if(NOT GTest_FOUND)
 endif()
 include(GoogleTest)
 
-set(_tests_runner_srcs
-    ops_test.cpp
-    io_test.cpp
-    data_test.cpp
-    decode_test.cpp
-    loss_test.cpp
-    model_test.cpp
-)
-if(MINI_LLM_USE_CUDA)
-    list(APPEND _tests_runner_srcs core_test.cpp)
-endif()
-add_executable(tests_runner ${_tests_runner_srcs})
-target_link_libraries(tests_runner PRIVATE
-    language_model
-    GTest::gtest_main
-    mini_transformer_warnings)
-if(MINI_LLM_USE_CUDA)
-    target_link_libraries(tests_runner PRIVATE core)
-endif()
+add_executable(tests_runner core_test.cpp)
+target_link_libraries(tests_runner PRIVATE core GTest::gtest_main mini_llm_warnings)
 set_target_properties(tests_runner PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 

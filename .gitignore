@@ -1,4 +1,6 @@
 build/
-weights/*.ckpt
+weights/*
+!weights/.gitkeep
 local/
 .obsidian/
+.DS_Store
