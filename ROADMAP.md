@@ -97,18 +97,18 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 - [x] 2.1 `tools/reference` (uv project, numpy + tokenizers, no torch): one `forward` for prefill and decode over a `State` (KV cache, conv rows, recurrent S); f32 throughout, asserted.
 - [x] 2.2 Validation: greedy continuations are correct on the built-in prompts ("Paris.", "6, 7, 8, 9,", `fibonacci(n-1) + fibonacci(n-2)`); decode and split prefill reproduce full-prefill logits (pytest). Checked once against transformers 5.19.0 (Qwen3_5ForConditionalGeneration, f32, eager attention, its chunked GDN path) in a throwaway venv on 2026-10-15: every layer's output and the last-position logits agree within 2.2e-6 relative error on all three prompts, and the 12-token greedy continuations are identical. torch is not a dependency of this repo.
-- [x] 2.3 `qwen35-ref dump` writes `weights/golden/<prompt>.safetensors`: `input_ids`, `greedy_ids` (I32), `embed`, `layerNN.mixer`, `layerNN.out`, `final_norm` (F32, all positions) and the last row of `logits`. The C++ reader needs I32 support to read the ids (Phase 3).
+- [x] 2.3 `qwen35-ref dump` writes `weights/golden/<prompt>.safetensors`: `input_ids`, `greedy_ids` (I32), `embed`, `layerNN.mixer`, `layerNN.out`, `final_norm` (F32, all positions) and the last row of `logits`. Read by `tests/runtime/golden_test.cpp`.
 
-### Phase 3 — Correct engine, naive kernels `[ ]`
+### Phase 3 — Correct engine, naive kernels `[x]`
 
 f32 activations, bf16 weights converted in-kernel; correctness only.
-- [ ] 3.1 Embedding gather, zero-centred RMSNorm, linear (bf16 weight × f32 activation), SiLU·mul, residual add.
-- [ ] 3.2 Full attention: q/gate split, QK-norm, partial RoPE, KV-cache append, causal GQA (8/2), sigmoid gate.
-- [ ] 3.3 GatedDeltaNet: causal conv1d + SiLU with conv state, L2 norm, β and g, per-token recurrence, gated RMSNorm.
-- [ ] 3.4 Prefill and decode through one executor; prefill runs the recurrence token by token for now.
-- [ ] 3.5 Tied lm_head, argmax.
+- [x] 3.1 Embedding gather, zero-centred RMSNorm, linear (bf16 weight × f32 activation, one warp per output), SiLU·mul, residual add.
+- [x] 3.2 Full attention: q/gate split as strided views, QK-norm + partial RoPE in one kernel, KV-cache append, causal GQA (8/2), sigmoid gate.
+- [x] 3.3 GatedDeltaNet: causal conv1d + SiLU carrying its state, β and g, per-token recurrence (one block per head, thread per value column), gated RMSNorm.
+- [x] 3.4 `runtime::Executor`: one `forward` for prefill and decode, inputs longer than `max_chunk` split into chunks.
+- [x] 3.5 Tied lm_head on the last position only, argmax (lowest index on ties).
 
-**Done when** logits match the reference per layer and greedy text matches on the golden prompts.
+**Result.** On the three golden prompts every layer is within 3.6e-6 relative error of the NumPy reference and greedy decoding is token-identical, also with 4-token prefill chunks. Each kernel has a CPU-transcription unit test; compute-sanitizer memcheck, racecheck and synccheck report no errors. Baseline on the RTX PRO 6000: decode 3.63 ms/token (276 tok/s, 24 % of the §3 floor), prefill of 5 tokens 7.4 ms.
 
 ### Phase 4 — Bandwidth-bound decode `[ ]`
 
@@ -170,5 +170,5 @@ Phase 2 can be written alongside Phase 1. The first milestone is Phase 3: correc
 
 ## 7. How to use this file
 
-- Tick boxes as steps land; put every measured number next to the §3 floor.
+- Tick boxes as steps land; log every measured step in `docs/performance.md` against the §3 floor.
 - Before starting a phase, write `docs/phase-N-<name>.md` with interfaces, file changes and the test plan.

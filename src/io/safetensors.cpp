@@ -27,6 +27,9 @@ core::DType parse_dtype(const std::string& s, const std::string& name) {
     if (s == "BF16") {
         return core::DType::bf16;
     }
+    if (s == "I32") {
+        return core::DType::i32;
+    }
     throw std::runtime_error(std::format("safetensors: {} has unsupported dtype {}", name, s));
 }
 

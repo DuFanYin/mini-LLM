@@ -39,3 +39,14 @@ mini_llm_add_test(weights_tests LABEL weights
   LIBS mini_llm::model mini_llm::io)
 target_compile_definitions(weights_tests PRIVATE
   MINI_LLM_DEFAULT_WEIGHTS="${PROJECT_SOURCE_DIR}/weights/qwen3.5-0.8b")
+
+mini_llm_add_test(golden_tests LABEL weights
+  SOURCES runtime/golden_test.cpp
+  LIBS mini_llm::runtime mini_llm::model mini_llm::io)
+target_compile_definitions(golden_tests PRIVATE
+  MINI_LLM_DEFAULT_WEIGHTS="${PROJECT_SOURCE_DIR}/weights/qwen3.5-0.8b"
+  MINI_LLM_GOLDEN_DIR="${PROJECT_SOURCE_DIR}/weights/golden")
+
+mini_llm_add_test(kernel_tests LABEL gpu
+  SOURCES kernels/ops_test.cpp
+  LIBS mini_llm::kernels)

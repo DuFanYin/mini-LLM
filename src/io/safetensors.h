@@ -19,7 +19,7 @@ struct TensorEntry {
     std::size_t bytes = 0;
 };
 
-// One read-only, memory-mapped .safetensors file. Only F32 and BF16 tensors are
+// One read-only, memory-mapped .safetensors file. F32, BF16 and I32 tensors are
 // accepted. Errors throw std::runtime_error.
 class SafetensorsFile {
 public:
